@@ -1,0 +1,23 @@
+name: Release — GitHub Release
+
+on:
+  push:
+    tags:
+      - '*.*.*'
+
+jobs:
+  # Matches both "X.Y.Z-rc0" (from release-rc.yml) and a manually pushed
+  # final "X.Y.Z" tag — routed by whether the tag name contains "-rc".
+  pre-release:
+    name: GitHub Pre-Release
+    if: contains(github.ref_name, '-rc')
+    permissions:
+      contents: write
+    uses: payplug/template-ci/.github/workflows/github_release_rc.yml@main
+
+  release:
+    name: GitHub Release
+    if: ${{ !contains(github.ref_name, '-rc') }}
+    permissions:
+      contents: write
+    uses: payplug/template-ci/.github/workflows/github_release.yml@main
