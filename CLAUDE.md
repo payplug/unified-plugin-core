@@ -67,8 +67,7 @@ running Docker daemon. The image builds automatically the first time any target 
 
 ## CI
 
-`.github/workflows/ci.yml` runs on PRs targeting `develop` (feature branches) or `master` (release
-branches merging to production — the same gate applies to both merge paths):
+`.github/workflows/ci.yml` runs on PRs targeting `develop`:
 
 - **`compatibility`** — matrix over PHP 7.1/7.4/8.0/8.1/8.2: `php -l` on every file in `src/` and
   `tests/`, directly against the checked-out files (no `composer install` — that would fail on the
