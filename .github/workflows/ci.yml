@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+
+jobs:
+  # -----------------------------------------------------------------------
+  # COMPATIBILITY — proves src/ actually parses on every supported runtime.
+  #    A real PHP 7.1 interpreter is the only thing that reliably rejects
+  #    typed properties / arrow functions / constructor promotion / match /
+  #    enum, since those are parser-level (not just semantic) features.
+  # -----------------------------------------------------------------------
+  compatibility:
+    name: Compatibility (PHP ${{ matrix.php-version }})
+    if: github.ref_type != 'tag' && github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php-version: ['7.1', '7.4', '8.0', '8.1', '8.2']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up PHP ${{ matrix.php-version }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+          tools: composer:v2
+          coverage: none
+
+      - name: Install dependencies (runtime only)
+        run: composer install --no-dev --no-interaction --prefer-dist
+
+      - name: Lint source for syntax compatibility
+        run: find src -name '*.php' -print0 | xargs -0 -n1 php -l
+
+  # -----------------------------------------------------------------------
+  # QUALITY — static analysis, code style & unit tests on PHP 7.4
+  #    (the actual development baseline; dev tooling requires 7.4+ to run)
+  # -----------------------------------------------------------------------
+  quality:
+    name: Quality (PHP 7.4)
+    if: github.ref_type != 'tag' && github.event.action != 'closed'
+    uses: payplug/template-ci/.github/workflows/php-quality.yml@main
+    with:
+      php-version: '7.4'
