@@ -1,0 +1,12 @@
+name: Release — Tag RC0
+
+on:
+  create
+
+jobs:
+  tag-rc0:
+    name: Create RC0 tag
+    if: github.ref_type == 'branch' && startsWith(github.ref_name, 'release/')
+    uses: payplug/template-ci/.github/workflows/auto_tag_rc.yml@main
+    secrets:
+      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
