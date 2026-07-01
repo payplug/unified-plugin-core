@@ -1,0 +1,43 @@
+{
+    "name": "payplug/unified-plugin-core",
+    "description": "Core foundations shared library for Payplug e-commerce plugins.",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Payplug",
+            "email": "support@payplug.com"
+        }
+    ],
+    "require": {
+        "php": ">=7.1"
+    },
+    "require-dev": {
+        "captainhook/captainhook": "^5.0",
+        "friendsofphp/php-cs-fixer": "^3.0",
+        "phpstan/phpstan": "^2.2",
+        "phpstan/phpstan-phpunit": "^2.0",
+        "phpunit/phpunit": "^9.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "PayplugUnifiedCore\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "PayplugUnifiedCore\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "post-install-cmd": "vendor/bin/captainhook install --force",
+        "post-update-cmd": "vendor/bin/captainhook install --force",
+        "test": "vendor/bin/phpunit tests",
+        "stan": "vendor/bin/phpstan analyse --configuration=phpstan.neon",
+        "cs-lint": "vendor/bin/php-cs-fixer fix --config=.php-cs-fixer.dist.php --dry-run --diff",
+        "cs-fix": "vendor/bin/php-cs-fixer fix --config=.php-cs-fixer.dist.php"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}
