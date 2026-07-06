@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - develop
+      - master
+    types: [opened, synchronize, reopened]
+
+jobs:
+  # -----------------------------------------------------------------------
+  # COMPATIBILITY — proves src/ and tests/ actually parse on every supported
+  #    runtime. A real PHP 7.1 interpreter is the only thing that reliably
+  #    rejects typed properties / arrow functions / constructor promotion /
+  #    match / enum, since those are parser-level (not just semantic)
+  #    features. This is a pure syntax check (`php -l`, no autoloading), so
+  #    it deliberately skips `composer install`: composer.json's own
+  #    `require.php: >=7.4` reflects the build-tooling floor (matching the
+  #    consuming plugins' Composer environment), not the PHP 7.1 runtime the
+  #    shipped code must still parse on — running `composer install` here
+  #    would fail Composer's platform check on the 7.1 leg for an unrelated
+  #    reason.
+  # -----------------------------------------------------------------------
+  compatibility:
+    name: Compatibility (PHP ${{ matrix.php-version }})
+    if: github.ref_type != 'tag' && github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php-version: ['7.1', '7.4', '8.0', '8.1', '8.2']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up PHP ${{ matrix.php-version }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+          coverage: none
+
+      - name: Lint source and tests for syntax compatibility
+        run: find src tests -name '*.php' -print0 | xargs -0 -r -n1 php -l
+
+  # -----------------------------------------------------------------------
+  # QUALITY — static analysis, code style & unit tests on PHP 7.4
+  #    (the actual development baseline; dev tooling requires 7.4+ to run)
+  # -----------------------------------------------------------------------
+  quality:
+    name: Quality (PHP 7.4)
+    if: github.ref_type != 'tag' && github.event.action != 'closed'
+    uses: payplug/template-ci/.github/workflows/php-quality.yml@main
+    with:
+      php-version: '7.4'
