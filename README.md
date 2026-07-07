@@ -39,6 +39,20 @@ with `php -l` across PHP 7.1, 7.4, 8.0, 8.1, and 8.2 interpreters — a parser-l
 independent of Composer's own PHP version gate (which would otherwise reject installing this
 package on anything below 7.4).
 
+## Exceptions
+
+`PayplugUnifiedCore\Exceptions\PayplugException` is the base type for every exception this
+library throws — catch it instead of a generic `\Exception` to handle any error raised by this
+package. Five domain-specific subtypes let callers catch more precisely:
+
+- `RefundAmountException`
+- `PaymentNotFoundException`
+- `InvalidPhoneNumberException`
+- `CardOperationException`
+- `ApiException`
+
+Each behaves like a standard PHP exception: `new SomeException($message, $code, $previous)`.
+
 ## License
 
 MIT
