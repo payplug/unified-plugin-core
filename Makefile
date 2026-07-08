@@ -1,7 +1,7 @@
 IMAGE := unified-plugin-core-dev
 DOCKER_RUN := docker run --rm -v $(CURDIR):/app -w /app -u "$$(id -u):$$(id -g)" -e COMPOSER_HOME=/tmp/composer $(IMAGE)
 
-.PHONY: build install test stan cs-lint cs-fix quality shell
+.PHONY: build install test coverage stan cs-lint cs-fix quality shell
 
 build:
 	docker build -t $(IMAGE) .
@@ -11,6 +11,9 @@ install: build
 
 test: build
 	$(DOCKER_RUN) composer test
+
+coverage: build
+	$(DOCKER_RUN) composer test-coverage
 
 stan: build
 	$(DOCKER_RUN) composer stan
