@@ -20,6 +20,9 @@ running Docker daemon. The image builds automatically the first time any target 
 - `make install` — `composer install` inside the container (also runs
   `vendor/bin/captainhook install --force` via Composer's `post-install-cmd`)
 - `make test` — run the PHPUnit suite (`vendor/bin/phpunit tests`)
+- `make coverage` — run the PHPUnit suite with code coverage (PCOV, installed in the Docker image),
+  writing a Clover XML report to `build/logs/clover.xml` (`build/` is gitignored); this is what CI's
+  `coverage` job feeds to SonarCloud
 - `make stan` — PHPStan level 8 analysis (`phpstan.neon`)
 - `make cs-lint` — PHP-CS-Fixer dry-run diff, no changes written
 - `make cs-fix` — PHP-CS-Fixer, applies fixes
@@ -78,7 +81,17 @@ running Docker daemon. The image builds automatically the first time any target 
 - `captainhook.json` — commit messages must match `/^(PRE|SMP)-\d+: .+/`; branch names must match
   `(feature|fix|hotfix|refactor)/(PRE|SMP)-\d+...` or `(release|patch)/x.y.z`; pre-commit also runs
   PHP-CS-Fixer.
-- `phpunit.xml.dist` — bootstraps `vendor/autoload.php`, single `unit` testsuite over `tests/`.
+- `phpunit.xml.dist` — bootstraps `vendor/autoload.php`, single `unit` testsuite over `tests/`;
+  `executionOrder="random"` + `resolveDependencies="true"` to surface hidden test-order coupling,
+  `failOnWarning`/`failOnRisky`/`beStrictAboutTestsThatDoNotTestAnything`/
+  `beStrictAboutOutputDuringTests` all `true` so silent problems (unverified mock expectations,
+  empty tests, stray output) become hard failures instead of passing quietly; `<coverage>` scopes
+  instrumentation to `src/` (the actual Clover report generation is a `--coverage-clover` CLI flag
+  on the `test-coverage` Composer script, not a static `<report>` block, so the output path stays
+  visible in `composer.json`/CI config).
+- `Dockerfile` — the dev image installs PCOV (`pecl install pcov`) as the coverage driver for local
+  `make coverage`/`make quality` runs; CI's `coverage` job instead requests
+  `coverage: pcov` directly via `shivammathur/setup-php@v2` on the GitHub-hosted runner.
 
 ## CI
 
@@ -91,6 +104,21 @@ running Docker daemon. The image builds automatically the first time any target 
 - **`quality`** — delegates to the reusable workflow
   `payplug/template-ci/.github/workflows/php-quality.yml@main` on PHP 7.4 (static analysis, code
   style, unit tests). This is the authoritative equivalent of local `make quality`.
+- **`coverage`** — runs `composer test-coverage` on PHP 7.4 (PCOV via `setup-php`), uploads
+  `build/logs/clover.xml` as the `clover-coverage` artifact. Exists as its own job (rather than
+  folded into `quality`, which is an external reusable workflow with no coverage support) so
+  coverage generation stays this repo's own concern.
+- **`sonarcloud`** — `needs: coverage`; delegates to
+  `payplug/template-ci/.github/workflows/sonarcloud-coverage.yml@main`, downloads the
+  `clover-coverage` artifact and feeds it to SonarCloud as `sonar.php.coverage.reportPaths`, with
+  `enforce-quality-gate: true` (a failed SonarCloud Quality Gate fails this job).
+  `sonarcloud-coverage.yml` is a new, purely-additive file in `template-ci` (the pre-existing
+  `sonarcloud.yml`, used by 4 other Payplug repos with no coverage/unit tests of their own, is
+  untouched). The SonarCloud project key is `github-payplug-unified-plugin-core` (also used in the
+  README coverage badge) — auto-provisioned successfully on first scan, confirmed via a real CI
+  run. The badge's `token=` query parameter is a SonarCloud-issued **badge token**, scoped solely to
+  reading that one metric's SVG — not a general API credential — and is meant to be published
+  publicly for private projects; this is the intended/documented usage, not a leaked secret.
 
 ## Release flow
 

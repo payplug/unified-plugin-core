@@ -5,6 +5,9 @@ on:
     branches:
       - develop
     types: [opened, synchronize, reopened]
+  push:
+    branches:
+      - develop
 
 jobs:
   # -----------------------------------------------------------------------
@@ -51,3 +54,53 @@ jobs:
     uses: payplug/template-ci/.github/workflows/php-quality.yml@main
     with:
       php-version: '7.4'
+
+  # -----------------------------------------------------------------------
+  # COVERAGE — generates a Clover coverage report (PCOV) for SonarCloud to
+  #    ingest. Kept separate from `quality` (a reusable, coverage-less
+  #    template-ci job) so coverage generation stays this repo's own concern.
+  # -----------------------------------------------------------------------
+  coverage:
+    name: Coverage
+    if: github.ref_type != 'tag' && github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up PHP 7.4
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '7.4'
+          coverage: pcov
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist --no-scripts
+
+      - name: Run tests with coverage
+        run: composer test-coverage
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: clover-coverage
+          path: build/logs/clover.xml
+          retention-days: 1
+
+  # -----------------------------------------------------------------------
+  # SONARCLOUD — static analysis + test coverage on SonarCloud, gated on the
+  #    Quality Gate passing.
+  # -----------------------------------------------------------------------
+  sonarcloud:
+    name: SonarCloud
+    if: github.ref_type != 'tag' && github.event.action != 'closed'
+    needs: coverage
+    uses: payplug/template-ci/.github/workflows/sonarcloud-coverage.yml@main
+    with:
+      project-name: 'github-payplug-unified-plugin-core'
+      src-folder: 'src/'
+      coverage-report-artifact: 'clover-coverage'
+      enforce-quality-gate: true
+    secrets:
+      sonar-orga: ${{ secrets.SONAR_ORGA }}
+      sonar-token: ${{ secrets.SONAR_TOKEN }}

@@ -1,5 +1,7 @@
 # unified-plugin-core
 
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=github-payplug-unified-plugin-core&metric=coverage&token=3c0c28c9d7b14862aa675238c8f6d065bd49f363)](https://sonarcloud.io/summary/new_code?id=github-payplug-unified-plugin-core)
+
 Core foundations shared library for Payplug e-commerce plugins (e.g. PrestaShop).
 
 ## Requirements
@@ -25,6 +27,7 @@ and runs `composer install` inside it, including the CaptainHook git hooks setup
 Other targets:
 
 - `make test` — run the PHPUnit suite
+- `make coverage` — run the PHPUnit suite with a Clover coverage report at `build/logs/clover.xml`
 - `make stan` — PHPStan level 8 static analysis
 - `make cs-lint` — PHP-CS-Fixer dry-run diff
 - `make cs-fix` — PHP-CS-Fixer, applies fixes
