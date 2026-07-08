@@ -56,6 +56,21 @@ package. Five domain-specific subtypes let callers catch more precisely:
 
 Each behaves like a standard PHP exception: `new SomeException($message, $code, $previous)`.
 
+## Utilities
+
+`PayplugUnifiedCore\Utilities\Helpers\AmountHelper` converts amounts between a major-unit float
+(e.g. a plugin's cart or order total) and the integer number of cents the Payplug API expects:
+
+```php
+use PayplugUnifiedCore\Utilities\Helpers\AmountHelper;
+
+AmountHelper::toCents(49.99);   // 4999
+AmountHelper::fromCents(4999);  // 49.99
+```
+
+`toCents()` corrects the classic floating-point imprecision (`19.99 * 100` evaluates to
+`1998.9999999999998` in raw PHP) by rounding before casting to `int`.
+
 ## License
 
 MIT
