@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace PayplugUnifiedCore\Tests\Utilities\Helpers;
 
 use PayplugUnifiedCore\Utilities\Helpers\AmountHelper;
+use PHPUnit\Framework\ExpectationFailedException;
 use PHPUnit\Framework\TestCase;
+use SebastianBergmann\RecursionContext\InvalidArgumentException;
 
 final class AmountHelperTest extends TestCase
 {
@@ -29,6 +31,43 @@ final class AmountHelperTest extends TestCase
     public function testToCentsRoundsNegativeExactHalfCentBoundaryAwayFromZero(): void
     {
         self::assertSame(-2000, AmountHelper::toCents(-19.995));
+    }
+
+    /**
+     * @dataProvider ambiguousHalfCentBoundaryModeProvider
+     *
+     * @param 1|2|3|4 $mode
+     * @param int $expectedCents
+     * @throws ExpectationFailedException
+     * @throws InvalidArgumentException
+     */
+    public function testToCentsAppliesExplicitRoundingModeOnAmbiguousBoundary(int $mode, int $expectedCents): void
+    {
+        // 19.995 lands exactly on a half-cent boundary, so the outcome genuinely
+        // depends on the caller's chosen mode — e.g. a merchant's CMS-configured
+        // rounding preference — unlike an already-decided 2-decimal amount.
+        self::assertSame($expectedCents, AmountHelper::toCents(19.995, $mode));
+    }
+
+    /**
+     * @return array<string, array<int, int>>
+     */
+    public function ambiguousHalfCentBoundaryModeProvider(): array
+    {
+        return [
+            'HALF_UP rounds away from zero' => [PHP_ROUND_HALF_UP, 2000],
+            'HALF_DOWN rounds toward zero' => [PHP_ROUND_HALF_DOWN, 1999],
+            'HALF_EVEN rounds to the nearest even cent' => [PHP_ROUND_HALF_EVEN, 2000],
+            'HALF_ODD rounds to the nearest odd cent' => [PHP_ROUND_HALF_ODD, 1999],
+        ];
+    }
+
+    public function testToCentsModeHasNoEffectOnAlreadyDecidedAmount(): void
+    {
+        // 19.99 is already a clean 2-decimal amount with no ambiguity left to
+        // resolve, so every rounding mode must agree.
+        self::assertSame(1999, AmountHelper::toCents(19.99, PHP_ROUND_HALF_DOWN));
+        self::assertSame(1999, AmountHelper::toCents(19.99, PHP_ROUND_HALF_EVEN));
     }
 
     public function testToCentsCorrectsClassicBinaryRoundingTrap(): void
