@@ -7,9 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `payplug/unified-plugin-core` is a PHP library providing core foundations shared across Payplug
 e-commerce plugins (e.g. PrestaShop). Beyond the scaffolding — composer manifest, PSR-4 directory
 skeleton, static analysis, code style, git hooks, test harness, CI, and a Dockerized dev
-environment — the library now provides a domain exception hierarchy under `src/Exceptions/`.
-`Contracts/`, `Models/`, and `Utilities/Helpers/` are still empty, held open by `.gitkeep`, for
-later tickets.
+environment — the library now provides a domain exception hierarchy under `src/Exceptions/` and a
+first pure-utility class, `AmountHelper`, under `src/Utilities/Helpers/`. `Contracts/` and
+`Models/` are still empty, held open by `.gitkeep`, for later tickets.
 
 ## Commands
 
@@ -37,9 +37,9 @@ running Docker daemon. The image builds automatically the first time any target 
 - PSR-4 autoload root: `PayplugUnifiedCore\` → `src/`; dev-only autoload root:
   `PayplugUnifiedCore\Tests\` → `tests/`.
 - `src/` is organized into four top-level categories: `Contracts/`, `Exceptions/`, `Models/`,
-  `Utilities/Helpers/`. `Contracts/`, `Models/`, and `Utilities/Helpers/` are still empty (held
-  open with `.gitkeep`); new code should land under the matching category rather than introducing
-  new top-level directories.
+  `Utilities/Helpers/`. `Contracts/` and `Models/` are still empty (held open with `.gitkeep`);
+  new code should land under the matching category rather than introducing new top-level
+  directories.
 - `Exceptions/` holds the domain exception hierarchy: `PayplugException` (base, extends
   `\Exception` directly) and five subtypes — `RefundAmountException`, `PaymentNotFoundException`,
   `InvalidPhoneNumberException`, `CardOperationException`, `ApiException` — each a plain marker
@@ -53,6 +53,26 @@ running Docker daemon. The image builds automatically the first time any target 
   `// @phpstan-ignore-next-line staticMethod.alreadyNarrowedType` comment directly above it (see
   any file in `tests/Exceptions/` for the exact pattern) — the assertion is kept as a regression
   guard, not removed.
+- `Utilities/Helpers/` holds small, dependency-free static utility classes — no CMS calls, no
+  network calls. The first one, `AmountHelper`, centralizes float↔centimes amount conversion
+  (`toCents(float $amount, int $mode = PHP_ROUND_HALF_UP): int`, `fromCents(int $cents): float`)
+  that was previously duplicated with divergent rounding behavior across the sibling CMS plugins
+  (notably `ps_round` on the PrestaShop side). Pattern for this category: `final class` with a
+  private, `@codeCoverageIgnore`d constructor (blocks instantiation without inflating the coverage
+  denominator with an intentionally-empty body — PHP's constructor-visibility check throws before
+  the body would ever execute, so a test calling it can never actually cover it) and public static
+  methods only, each with a docblock `<code>` example showing a realistic plugin call site; a
+  matching test in `tests/Utilities/Helpers/`. `toCents()`'s `$mode` parameter exists specifically
+  because PrestaShop is the only sibling CMS that lets merchants configure their own rounding
+  algorithm (`PS_ROUND_MODE`, consumed by `Tools::ps_round()`); WooCommerce/Magento 2/Sylius all
+  hardcode PHP's default rounding and will simply never pass `$mode`. The mode only changes the
+  outcome for genuinely ambiguous inputs landing exactly on a half-cent boundary (e.g. `19.995`) —
+  an already-decided 2-decimal amount rounds identically under every mode — so callers should pass
+  their own resolved rounding preference in rather than pre-rounding themselves. Because
+  PHPStan's core stubs constrain `round()`'s `$mode` parameter to the literal type `1|2|3|4` (the
+  `PHP_ROUND_HALF_*` constants), `toCents()`'s own `$mode` parameter needs a matching
+  `@param 1|2|3|4 $mode` docblock annotation — a plain `@param int $mode` fails `make stan`; watch
+  for an IDE/formatter silently "simplifying" it back.
 
 ## Constraints to preserve
 
@@ -88,7 +108,12 @@ running Docker daemon. The image builds automatically the first time any target 
   empty tests, stray output) become hard failures instead of passing quietly; `<coverage>` scopes
   instrumentation to `src/` (the actual Clover report generation is a `--coverage-clover` CLI flag
   on the `test-coverage` Composer script, not a static `<report>` block, so the output path stays
-  visible in `composer.json`/CI config).
+  visible in `composer.json`/CI config). The suite is unit-only because everything so far
+  (`Exceptions/`, `Utilities/Helpers/`) is dependency-free by design; the first class that does
+  real I/O (most likely a Payplug API client, given the existing `ApiException`) should trigger
+  splitting this into `unit` + `integration` testsuites and adding a matching
+  `tests/Integration/` directory — no E2E tests are planned, since this is a frontend-less PHP
+  library.
 - `Dockerfile` — the dev image installs PCOV (`pecl install pcov`) as the coverage driver for local
   `make coverage`/`make quality` runs; CI's `coverage` job instead requests
   `coverage: pcov` directly via `shivammathur/setup-php@v2` on the GitHub-hosted runner.
