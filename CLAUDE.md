@@ -98,9 +98,11 @@ running Docker daemon. The image builds automatically the first time any target 
   newer syntax semantically).
 - `.php-cs-fixer.dist.php` — `@PSR12` + `@PHP71Migration` rule sets, plus `single_quote`, short
   array syntax, `declare_strict_types`, `void_return`, `ordered_imports`, `no_unused_imports`.
-- `captainhook.json` — commit messages must match `/^(PRE|SMP)-\d+: .+/`; branch names must match
-  `(feature|fix|hotfix|refactor)/(PRE|SMP)-\d+...` or `(release|patch)/x.y.z`; pre-commit also runs
-  PHP-CS-Fixer.
+- `captainhook.json` — commit messages must match `/^((PRE|SMP)-\d+|PATCH-\d+\.\d+\.\d+(-rc\d+)?): .+/`,
+  i.e. either a Jira ticket prefix or a ticket-less `PATCH-X.Y.Z` / `PATCH-X.Y.Z-rcN` prefix for
+  fixes that ride along on a patch/release branch with no ticket of their own; branch names must
+  match `(feature|fix|hotfix|refactor)/(PRE|SMP)-\d+...` or `(release|patch)/x.y.z[-rcN]`; pre-commit
+  also runs PHP-CS-Fixer.
 - `phpunit.xml.dist` — bootstraps `vendor/autoload.php`, single `unit` testsuite over `tests/`;
   `executionOrder="random"` + `resolveDependencies="true"` to surface hidden test-order coupling,
   `failOnWarning`/`failOnRisky`/`beStrictAboutTestsThatDoNotTestAnything`/
@@ -120,7 +122,9 @@ running Docker daemon. The image builds automatically the first time any target 
 
 ## CI
 
-`.github/workflows/ci.yml` runs on PRs targeting `develop`:
+`.github/workflows/ci.yml` runs on PRs targeting `develop` or `master` (the latter covers
+`release/*`/`patch/*` branches merging directly into `master`, which otherwise got no CI
+enforcement before merge):
 
 - **`compatibility`** — matrix over PHP 7.1/7.4/8.0/8.1/8.2: `php -l` on every file in `src/` and
   `tests/`, directly against the checked-out files (no `composer install` — that would fail on the
