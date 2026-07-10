@@ -7,9 +7,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `payplug/unified-plugin-core` is a PHP library providing core foundations shared across Payplug
 e-commerce plugins (e.g. PrestaShop). Beyond the scaffolding — composer manifest, PSR-4 directory
 skeleton, static analysis, code style, git hooks, test harness, CI, and a Dockerized dev
-environment — the library now provides a domain exception hierarchy under `src/Exceptions/` and a
-first pure-utility class, `AmountHelper`, under `src/Utilities/Helpers/`. `Contracts/` and
-`Models/` are still empty, held open by `.gitkeep`, for later tickets.
+environment — the library now provides a domain exception hierarchy under `src/Exceptions/` and
+two utility classes under `src/Utilities/Helpers/`: `AmountHelper` (dependency-free) and
+`PhoneHelper` (backed by `giggsey/libphonenumber-for-php`, the library's first real runtime
+dependency — see "Constraints to preserve" for what that changed). `Contracts/` and `Models/` are
+still empty, held open by `.gitkeep`, for later tickets.
 
 ## Commands
 
@@ -31,6 +33,17 @@ running Docker daemon. The image builds automatically the first time any target 
   other one-off command, e.g. `vendor/bin/phpunit tests/ScaffoldingTest.php` or
   `vendor/bin/phpunit --filter testMethodName`
 - `make build` — rebuild the Docker image explicitly (rarely needed; other targets depend on it)
+- `make verify-71` — the only target that actually exercises the PHP 7.1 runtime floor.
+  Composer itself refuses to run below PHP 7.2.5, and this repo's own `composer.json`
+  `require.php` (`>=7.4`) is a build-tooling floor, not a runtime one — so there is no
+  meaningful "install under PHP 7.1" for this project. Instead: installs a `--no-dev`
+  vendor tree (what actually ships to merchants — dev tooling never bundles into the
+  plugin ZIP) into a separate `vendor-nodev/` via `COMPOSER_VENDOR_DIR`, without
+  touching the main dev `vendor/`, then boots it under a real `php:7.1-cli` container
+  (`Dockerfile.php71-check`, no Composer needed there) and runs `php -l` on `src/`/
+  `tests/` plus `scripts/verify-php71-smoke.php` (a plain, 7.1-syntax script — it can't
+  use PHPUnit, which itself needs PHP ≥7.3). Run this after touching `composer.json` or
+  any dependency version.
 
 ## Architecture
 
@@ -53,8 +66,9 @@ running Docker daemon. The image builds automatically the first time any target 
   `// @phpstan-ignore-next-line staticMethod.alreadyNarrowedType` comment directly above it (see
   any file in `tests/Exceptions/` for the exact pattern) — the assertion is kept as a regression
   guard, not removed.
-- `Utilities/Helpers/` holds small, dependency-free static utility classes — no CMS calls, no
-  network calls. The first one, `AmountHelper`, centralizes float↔centimes amount conversion
+- `Utilities/Helpers/` holds small static utility classes — no CMS calls, no network calls; most
+  are also dependency-free, but that's not a hard rule (see `PhoneHelper` below). The first one,
+  `AmountHelper`, centralizes float↔centimes amount conversion
   (`toCents(float $amount, int $mode = PHP_ROUND_HALF_UP): int`, `fromCents(int $cents): float`)
   that was previously duplicated with divergent rounding behavior across the sibling CMS plugins
   (notably `ps_round` on the PrestaShop side). Pattern for this category: `final class` with a
@@ -73,6 +87,15 @@ running Docker daemon. The image builds automatically the first time any target 
   `PHP_ROUND_HALF_*` constants), `toCents()`'s own `$mode` parameter needs a matching
   `@param 1|2|3|4 $mode` docblock annotation — a plain `@param int $mode` fails `make stan`; watch
   for an IDE/formatter silently "simplifying" it back.
+- `PhoneHelper` (same `final class` + private-constructor pattern as `AmountHelper`) centralizes
+  phone number normalization — `toE164(string $phone, string $countryCode): string` and
+  `isMobile(string $phone, string $countryCode): bool` — previously duplicated between plugins (PS
+  `PhoneHelper.php`, WC's `PayplugAddressData` parsing), backed by `giggsey/libphonenumber-for-php`.
+  `$countryCode` is a 2-letter ISO 3166-1 alpha-2 region code (the UK's is `GB`, not `UK`). Both
+  methods share a private `parse()` helper; any unparseable/invalid input throws
+  `InvalidPhoneNumberException` from both. This is the library's first helper with a real runtime
+  dependency — see "Constraints to preserve" below for the PHP 7.1 floor implications that came
+  with it, and `make verify-71` for how that floor is actually verified.
 
 ## Constraints to preserve
 
@@ -88,6 +111,27 @@ running Docker daemon. The image builds automatically the first time any target 
   still has to run on PHP 7.1 hosts. Don't conflate the two: the syntax constraint above is about
   what ships in the ZIP; `require.php` is about what can run `composer install` against this
   package during plugin development/CI.
+  - This distinction has a sharp edge that PRE-3466 (`PhoneHelper`, the first UPC helper with a
+    real runtime dependency) hit directly: `require.php`'s own `>=7.4` value gets baked into
+    Composer's generated `vendor/composer/platform_check.php`, which `vendor/autoload.php` runs
+    unconditionally — so if `vendor/` is ever bundled as literally installed, that overly
+    conservative build-tooling floor would fatal-error on a real PHP 7.1 merchant host, even
+    though every actual dependency is genuinely 7.1-compatible. Fixed via
+    `"config": {"platform-check": false}` in `composer.json` — deliberate, not a suppressed
+    warning: `make verify-71` independently proves the shipped code and its dependencies
+    actually run on PHP 7.1 (see Commands above), so disabling the blunt aggregate check trades
+    it for a real one.
+  - Any new runtime dependency (`require`, not `require-dev`) needs its **actual PHP floor**
+    verified against its own upstream `composer.json` — a caret range on a dependency's major
+    version is not sufficient proof of compatibility, because a package can raise its own PHP
+    floor mid-line without a major bump (this happened to `giggsey/libphonenumber-for-php`
+    between `8.13.45` and `8.13.50`). Composer resolves one shared dependency graph across
+    `require` and `require-dev` combined (there is only one `vendor/` copy of any package), so a
+    transitive dependency shared with dev tooling (e.g. `symfony/polyfill-mbstring`, needed by
+    both `giggsey/libphonenumber-for-php` and `friendsofphp/php-cs-fixer`) may need an **exact**
+    version pin, not a caret range, chosen where both requirers' constraints and the PHP 7.1 floor
+    all overlap. Run `make verify-71` after touching any dependency version — it's the only thing
+    that actually proves the floor holds.
 - `captainhook/captainhook` must stay in `require-dev` only, never in `require`.
 - PSR-4 namespace root is exactly `PayplugUnifiedCore\` (lowercase "plug").
 
@@ -112,11 +156,12 @@ running Docker daemon. The image builds automatically the first time any target 
   instrumentation to `src/` (the actual Clover report generation is a `--coverage-clover` CLI flag
   on the `test-coverage` Composer script, not a static `<report>` block, so the output path stays
   visible in `composer.json`/CI config). The suite is unit-only because everything so far
-  (`Exceptions/`, `Utilities/Helpers/`) is dependency-free by design; the first class that does
-  real I/O (most likely a Payplug API client, given the existing `ApiException`) should trigger
-  splitting this into `unit` + `integration` testsuites and adding a matching
-  `tests/Integration/` directory — no E2E tests are planned, since this is a frontend-less PHP
-  library.
+  (`Exceptions/`, `Utilities/Helpers/`) is I/O-free by design — no CMS calls, no network calls;
+  `PhoneHelper` has a real Composer dependency (`giggsey/libphonenumber-for-php`) but still no I/O,
+  so it stays a unit test. The first class that does real I/O (most likely a Payplug API client,
+  given the existing `ApiException`) should trigger splitting this into `unit` + `integration`
+  testsuites and adding a matching `tests/Integration/` directory — no E2E tests are planned,
+  since this is a frontend-less PHP library.
 - `Dockerfile` — the dev image installs PCOV (`pecl install pcov`) as the coverage driver for local
   `make coverage`/`make quality` runs; CI's `coverage` job instead requests
   `coverage: pcov` directly via `shivammathur/setup-php@v2` on the GitHub-hosted runner.

@@ -1,4 +1,5 @@
 vendor/
+vendor-nodev/
 composer.lock
 build/
 .php-cs-fixer.cache
