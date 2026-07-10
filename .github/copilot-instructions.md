@@ -165,3 +165,8 @@ When reviewing a new commit on a PR that already has open review threads:
 - **Do not re-open or re-comment** on issues that were already resolved in a previous round.
 - Only open new threads for issues that are genuinely new or that remain unresolved.
 - If a previous finding was partially addressed, update the thread with what still needs attention rather than opening a duplicate.
+- **Respect explicit pushback.** If a maintainer replied to a thread explaining why the suggestion
+  won't be implemented (e.g. "won't fix, because...", "intentional, see CLAUDE.md section X"),
+  treat that as settled — don't repeat the same finding in a later review pass on this PR, whether
+  or not the thread was formally marked resolved. Only raise it again if the underlying code
+  changes in a way that's actually relevant to the original concern.
