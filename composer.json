@@ -10,11 +10,14 @@
         }
     ],
     "require": {
-        "php": ">=7.4"
+        "php": ">=7.4",
+        "giggsey/libphonenumber-for-php": "8.13.45",
+        "giggsey/locale": "1.9",
+        "symfony/polyfill-mbstring": "1.28.0"
     },
     "require-dev": {
         "captainhook/captainhook": "^5.0",
-        "friendsofphp/php-cs-fixer": "^3.0",
+        "friendsofphp/php-cs-fixer": "3.60.0",
         "mockery/mockery": "^1.6",
         "phpstan/phpstan": "^2.2",
         "phpstan/phpstan-mockery": "^2.0",
@@ -41,6 +44,7 @@
         "cs-fix": "vendor/bin/php-cs-fixer fix --config=.php-cs-fixer.dist.php"
     },
     "config": {
-        "sort-packages": true
+        "sort-packages": true,
+        "platform-check": false
     }
 }

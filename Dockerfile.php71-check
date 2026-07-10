@@ -1,0 +1,7 @@
+FROM php:7.1-cli
+
+RUN useradd --create-home --uid 1000 appuser
+
+WORKDIR /app
+
+USER appuser
