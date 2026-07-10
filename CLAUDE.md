@@ -101,8 +101,9 @@ running Docker daemon. The image builds automatically the first time any target 
 - `captainhook.json` — commit messages must match `/^((PRE|SMP)-\d+|PATCH-\d+\.\d+\.\d+(-rc\d+)?): .+/`,
   i.e. either a Jira ticket prefix or a ticket-less `PATCH-X.Y.Z` / `PATCH-X.Y.Z-rcN` prefix for
   fixes that ride along on a patch/release branch with no ticket of their own; branch names must
-  match `(feature|fix|hotfix|refactor)/(PRE|SMP)-\d+...` or `(release|patch)/x.y.z[-rcN]`; pre-commit
-  also runs PHP-CS-Fixer.
+  match `(feature|fix|hotfix|refactor)/(PRE|SMP)-\d+...` or `(release|patch)/x.y.z` with an
+  optional `-rcN` suffix (e.g. `release/0.0.2` or `patch/0.0.2-rc0`); pre-commit also runs
+  PHP-CS-Fixer.
 - `phpunit.xml.dist` — bootstraps `vendor/autoload.php`, single `unit` testsuite over `tests/`;
   `executionOrder="random"` + `resolveDependencies="true"` to surface hidden test-order coupling,
   `failOnWarning`/`failOnRisky`/`beStrictAboutTestsThatDoNotTestAnything`/
@@ -122,9 +123,10 @@ running Docker daemon. The image builds automatically the first time any target 
 
 ## CI
 
-`.github/workflows/ci.yml` runs on PRs targeting `develop` or `master` (the latter covers
-`release/*`/`patch/*` branches merging directly into `master`, which otherwise got no CI
-enforcement before merge):
+`.github/workflows/ci.yml` runs on PRs targeting `develop`, `master`, or any `release/**`/
+`patch/**` branch — the glob patterns matter because patch branches merge into release branches
+(e.g. `patch/0.0.2-rc0` → `release/0.0.2`), not just into `master` directly, and a fixed branch
+list missed that hop entirely before this was caught:
 
 - **`compatibility`** — matrix over PHP 7.1/7.4/8.0/8.1/8.2: `php -l` on every file in `src/` and
   `tests/`, directly against the checked-out files (no `composer install` — that would fail on the
@@ -153,8 +155,13 @@ enforcement before merge):
 
 Branching model: `feature/**` branches PR into `develop`; a `release/X.Y.Z` branch cut from
 `develop` becomes a release candidate; once merged into `master`, a manually pushed `X.Y.Z` tag
-publishes it. Two workflows automate the tagging/changelog side, both thin wrappers around
-`payplug/template-ci` reusable workflows (same pattern as the `quality` CI job):
+publishes it. A `patch/*` branch exists to fix a specific version rather than introduce new
+scope, and where it's cut from depends on which version it's fixing: `patch/X.Y.Z` (no `-rcN`)
+branches from `master` to patch an already-published release; `patch/X.Y.Z-rcN` branches from
+the corresponding still-open `release/X.Y.Z` branch to fix that pre-release before it's finalized
+(this repo's own `patch/0.0.2-rc0` → `release/0.0.2` is the latter case). Two workflows automate
+the tagging/changelog side, both thin wrappers around `payplug/template-ci` reusable workflows
+(same pattern as the `quality` CI job):
 
 - **`.github/workflows/release-rc.yml`** — fires on branch creation; if the new branch matches
   `release/*`, calls `auto_tag_rc.yml` (needs the `RELEASE_TOKEN` repo secret — a PAT, since tags
