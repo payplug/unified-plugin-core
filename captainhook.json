@@ -22,6 +22,10 @@
             {
                 "action": "vendor/bin/php-cs-fixer fix --config=.php-cs-fixer.dist.php --diff",
                 "options": {}
+            },
+            {
+                "action": "make verify-71",
+                "options": {}
             }
         ]
     }

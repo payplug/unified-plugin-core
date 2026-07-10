@@ -66,6 +66,20 @@ categories waiting for later tickets to add real code.
   This is intentional — GitHub Actions doesn't allow combining `tags` and `tags-ignore` on one
   trigger, so splitting by tag content in job `if:` conditions is the correct approach, not a
   workaround to "fix."
+- **A `use` (namespace import) statement does not need to textually precede other top-level
+  statements in a file** — it's a compile-time-only construct that only needs to sit in the
+  outermost file scope (not nested inside a function/class/conditional). A file that does
+  `$x = ...; require ...;` before its `use` lines, like `scripts/verify-php71-smoke.php`, is valid
+  PHP on every supported version, not a parse error. Verified directly: `php -l` reports no syntax
+  errors, and the script actually executes successfully as part of `make verify-71` on a real PHP
+  7.1 interpreter.
+- **`giggsey/libphonenumber-for-php`'s `NumberParseException` never embeds the raw input phone
+  number in its own message** — every throw site in the vendored library (`PhoneNumberUtil.php`)
+  uses a static, generic string (e.g. "The string supplied did not seem to be a phone number.").
+  Re-throwing or wrapping `$e->getMessage()` from a caught `NumberParseException` does not leak a
+  customer's phone number. This does not extend to hand-written messages elsewhere in this
+  codebase (e.g. `PhoneHelper`'s own exception messages) — those are still fair game to review on
+  their own merits.
 
 ## Code Review Dimensions
 
