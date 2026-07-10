@@ -34,13 +34,25 @@ Other targets:
 - `make quality` — `cs-lint` + `stan` + `test` (mirrors the CI `quality` job)
 - `make shell` — interactive shell in the dev container, e.g. to run a single test:
   `vendor/bin/phpunit tests/ScaffoldingTest.php`
+- `make verify-71` — proves the PHP 7.1 runtime floor actually holds (see Compatibility below)
 
 ## Compatibility
 
-PHP 7.1 compatibility is enforced by a dedicated CI job that lints `src/` and `tests/` directly
-with `php -l` across PHP 7.1, 7.4, 8.0, 8.1, and 8.2 interpreters — a parser-level check
-independent of Composer's own PHP version gate (which would otherwise reject installing this
-package on anything below 7.4).
+PHP 7.1 compatibility is enforced two ways:
+
+- A CI job lints `src/` and `tests/` directly with `php -l` across PHP 7.1, 7.4, 8.0, 8.1, and 8.2
+  interpreters — a parser-level check independent of Composer's own PHP version gate (which would
+  otherwise reject installing this package on anything below 7.4).
+- `make verify-71` goes further: it builds a `--no-dev` vendor tree (what actually ships to
+  merchants) and boots it under a real `php:7.1-cli` interpreter, then runs a small smoke script
+  exercising `PhoneHelper`/`AmountHelper` end to end. This is what actually caught that a caret
+  version range on `giggsey/libphonenumber-for-php` had silently drifted past the PHP 7.1 floor —
+  run it after touching any dependency version.
+
+Composer's own `platform-check` (the runtime guard baked into `vendor/composer/platform_check.php`)
+is disabled in `composer.json` (`"config": {"platform-check": false}`), since it would otherwise
+enforce this repo's own `require.php` (`>=7.4`, a build-tooling floor, not a runtime one) against
+the merchant's actual PHP version. `make verify-71` is the real replacement check.
 
 ## Exceptions
 
@@ -79,6 +91,20 @@ amounts landing exactly on a half-cent boundary:
 AmountHelper::toCents(19.995, PHP_ROUND_HALF_EVEN); // 2000
 AmountHelper::toCents(19.995, PHP_ROUND_HALF_DOWN); // 1999
 ```
+
+`PayplugUnifiedCore\Utilities\Helpers\PhoneHelper` normalizes a customer-entered phone number to
+E.164 (the format the Payplug API expects) and determines whether it's a mobile line, backed by
+`giggsey/libphonenumber-for-php`:
+
+```php
+use PayplugUnifiedCore\Utilities\Helpers\PhoneHelper;
+
+PhoneHelper::toE164('06 12 34 56 78', 'FR');  // "+33612345678"
+PhoneHelper::isMobile('06 12 34 56 78', 'FR'); // true
+```
+
+`$countryCode` is a 2-letter ISO 3166-1 alpha-2 region code (the UK's is `GB`, not `UK`). Invalid
+or unparseable input throws `InvalidPhoneNumberException` from both methods.
 
 ## License
 
