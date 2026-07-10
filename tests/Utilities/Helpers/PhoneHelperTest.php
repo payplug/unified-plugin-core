@@ -118,6 +118,24 @@ final class PhoneHelperTest extends TestCase
             'too short for any region' => ['123', 'FR'],
             'wrong pattern for region' => ['0000000000', 'FR'],
             'invalid country code' => ['0612345678', 'XX'],
+            'valid number for a different region' => ['+14155552671', 'FR'],
         ];
+    }
+
+    public function testToE164AcceptsLowercaseCountryCode(): void
+    {
+        self::assertSame('+33612345678', PhoneHelper::toE164('0612345678', 'fr'));
+    }
+
+    public function testToE164ExceptionMessageDoesNotLeakPhoneNumber(): void
+    {
+        // '0000000000' parses structurally but fails isValidNumber() for FR, exercising
+        // PhoneHelper's own sprintf() message (as opposed to the vendor library's).
+        try {
+            PhoneHelper::toE164('0000000000', 'FR');
+            self::fail('Expected InvalidPhoneNumberException to be thrown.');
+        } catch (InvalidPhoneNumberException $e) {
+            self::assertStringNotContainsString('0000000000', $e->getMessage());
+        }
     }
 }

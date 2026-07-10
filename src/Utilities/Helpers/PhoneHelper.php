@@ -67,6 +67,7 @@ final class PhoneHelper
      */
     private static function parse(string $phone, string $countryCode): PhoneNumber
     {
+        $countryCode = strtoupper($countryCode);
         $phoneUtil = PhoneNumberUtil::getInstance();
 
         try {
@@ -75,10 +76,9 @@ final class PhoneHelper
             throw new InvalidPhoneNumberException($e->getMessage(), 0, $e);
         }
 
-        if (!$phoneUtil->isValidNumber($number)) {
+        if (!$phoneUtil->isValidNumber($number) || $countryCode !== $phoneUtil->getRegionCodeForNumber($number)) {
             throw new InvalidPhoneNumberException(\sprintf(
-                'Phone number "%s" is not a valid number for region "%s".',
-                $phone,
+                'Phone number is not a valid number for region "%s".',
                 $countryCode
             ));
         }
