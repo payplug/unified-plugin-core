@@ -71,7 +71,7 @@ Each behaves like a standard PHP exception: `new SomeException($message, $code, 
 
 ## Models
 
-`PayplugUnifiedCore\Models\PaymentOutcome` expresses PPC's payment result intent to the CMS,
+`PayplugUnifiedCore\Models\PaymentOutcome` expresses UPC's payment result intent to the CMS,
 decoupled from any CMS's native order-status vocabulary — a set of class constants (a PHP 7.1
 stand-in for a PHP 8.1 `enum`):
 

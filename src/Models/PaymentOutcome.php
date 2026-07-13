@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace PayplugUnifiedCore\Models;
 
 /**
- * Expresses PPC's payment result intent to the CMS, decoupled from any CMS's native
+ * Expresses UPC's payment result intent to the CMS, decoupled from any CMS's native
  * order-status vocabulary. PHP 8.1 enum syntax is excluded by this library's PHP 7.1
  * floor, so this uses class constants instead.
  *
