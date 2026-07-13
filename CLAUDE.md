@@ -54,9 +54,10 @@ running Docker daemon. The image builds automatically the first time any target 
   `Utilities/Helpers/`. `Contracts/` is still empty (held open with `.gitkeep`); new code should
   land under the matching category rather than introducing new top-level directories.
 - `Exceptions/` holds the domain exception hierarchy: `PayplugException` (base, extends
-  `\Exception` directly) and five subtypes — `RefundAmountException`, `PaymentNotFoundException`,
-  `InvalidPhoneNumberException`, `CardOperationException`, `ApiException` — each a plain marker
-  class extending `PayplugException` directly, with no custom constructor or properties, so CMS
+  `\Exception` directly) and six subtypes — `RefundAmountException`, `PaymentNotFoundException`,
+  `InvalidPhoneNumberException`, `CardOperationException`, `ApiException`,
+  `InvalidOperationDataException` — each a plain marker class extending `PayplugException`
+  directly, with no custom constructor or properties, so CMS
   plugins can catch specific error types instead of a generic exception. Any future addition to
   this hierarchy should follow the same pattern: one class per file, no PHP 7.1-incompatible
   syntax, and a matching test in `tests/Exceptions/` verifying the `instanceof` chain and the

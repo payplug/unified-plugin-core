@@ -25,6 +25,15 @@ final class PaymentOutcome
     public const REFUNDED = 'refunded';
     public const FAILED = 'failed';
 
+    private const ALL = [
+        self::PAID,
+        self::AUTHORIZED,
+        self::CAPTURE_REQUIRED,
+        self::THREE_DS_PENDING,
+        self::REFUNDED,
+        self::FAILED,
+    ];
+
     /**
      * @codeCoverageIgnore
      */
@@ -34,6 +43,6 @@ final class PaymentOutcome
 
     public static function isValid(string $value): bool
     {
-        return \in_array($value, (new \ReflectionClass(self::class))->getConstants(), true);
+        return \in_array($value, self::ALL, true);
     }
 }
