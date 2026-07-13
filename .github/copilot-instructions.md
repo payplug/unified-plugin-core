@@ -23,6 +23,22 @@ categories waiting for later tickets to add real code.
 - `src/Utilities/Helpers/` — stateless helper functions/classes
 - `tests/` — PHPUnit tests, PSR-4 root `PayplugUnifiedCore\Tests\`
 
+## Review Thoroughness
+
+- Before writing any comment, read every added/changed file completely, top to bottom — not a
+  sample, not just the hunks with surrounding context lines. Diff context can truncate or hide
+  content above/below what's shown; open the full file.
+- This applies equally to prose/documentation files (`README.md`, `CLAUDE.md`,
+  `.github/copilot-instructions.md` itself) as to source code — a typo, a stale cross-reference,
+  or an internal inconsistency in a docblock or markdown file is exactly as real a finding as a
+  bug in PHP code, and just as easy to miss by skimming.
+- Give every review pass your most complete effort — do not hold back findings on the assumption
+  that a later round will catch what this one misses. A maintainer re-requesting review expects
+  that pass to find whatever is newly findable in the current diff, not to slowly surface issues
+  that were sitting in the diff unchanged since the first review. If the same content was present
+  and reviewable in an earlier round and wasn't flagged, that's a miss to avoid, not an acceptable
+  gap to fill in on a later pass.
+
 ## Review Scope
 
 - Review only the lines actually added or changed in this PR's diff — not the full contents of
