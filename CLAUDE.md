@@ -7,11 +7,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `payplug/unified-plugin-core` is a PHP library providing core foundations shared across Payplug
 e-commerce plugins (e.g. PrestaShop). Beyond the scaffolding — composer manifest, PSR-4 directory
 skeleton, static analysis, code style, git hooks, test harness, CI, and a Dockerized dev
-environment — the library now provides a domain exception hierarchy under `src/Exceptions/` and
-two utility classes under `src/Utilities/Helpers/`: `AmountHelper` (dependency-free) and
-`PhoneHelper` (backed by `giggsey/libphonenumber-for-php`, the library's first real runtime
-dependency — see "Constraints to preserve" for what that changed). `Contracts/` and `Models/` are
-still empty, held open by `.gitkeep`, for later tickets.
+environment — the library now provides a domain exception hierarchy under `src/Exceptions/`, two
+utility classes under `src/Utilities/Helpers/` (`AmountHelper`, dependency-free, and `PhoneHelper`,
+backed by `giggsey/libphonenumber-for-php`, the library's first real runtime dependency — see
+"Constraints to preserve" for what that changed), and two value objects under `src/Models/`:
+`PaymentOutcome` (payment-result constants) and `OperationData` (validating persistence value
+object). `Contracts/` is still empty, held open by `.gitkeep`, for later tickets.
 
 ## Commands
 
@@ -50,13 +51,13 @@ running Docker daemon. The image builds automatically the first time any target 
 - PSR-4 autoload root: `PayplugUnifiedCore\` → `src/`; dev-only autoload root:
   `PayplugUnifiedCore\Tests\` → `tests/`.
 - `src/` is organized into four top-level categories: `Contracts/`, `Exceptions/`, `Models/`,
-  `Utilities/Helpers/`. `Contracts/` and `Models/` are still empty (held open with `.gitkeep`);
-  new code should land under the matching category rather than introducing new top-level
-  directories.
+  `Utilities/Helpers/`. `Contracts/` is still empty (held open with `.gitkeep`); new code should
+  land under the matching category rather than introducing new top-level directories.
 - `Exceptions/` holds the domain exception hierarchy: `PayplugException` (base, extends
-  `\Exception` directly) and five subtypes — `RefundAmountException`, `PaymentNotFoundException`,
-  `InvalidPhoneNumberException`, `CardOperationException`, `ApiException` — each a plain marker
-  class extending `PayplugException` directly, with no custom constructor or properties, so CMS
+  `\Exception` directly) and six subtypes — `RefundAmountException`, `PaymentNotFoundException`,
+  `InvalidPhoneNumberException`, `CardOperationException`, `ApiException`,
+  `InvalidOperationDataException` — each a plain marker class extending `PayplugException`
+  directly, with no custom constructor or properties, so CMS
   plugins can catch specific error types instead of a generic exception. Any future addition to
   this hierarchy should follow the same pattern: one class per file, no PHP 7.1-incompatible
   syntax, and a matching test in `tests/Exceptions/` verifying the `instanceof` chain and the
@@ -66,6 +67,22 @@ running Docker daemon. The image builds automatically the first time any target 
   `// @phpstan-ignore-next-line staticMethod.alreadyNarrowedType` comment directly above it (see
   any file in `tests/Exceptions/` for the exact pattern) — the assertion is kept as a regression
   guard, not removed.
+- `Models/` holds value objects with no CMS/network I/O of their own. `PaymentOutcome` is a
+  non-instantiable constants container (`final class` + private `@codeCoverageIgnore`d
+  constructor, same pattern as the `Utilities/Helpers/` classes below) holding 6 string constants
+  (`PAID`, `AUTHORIZED`, `CAPTURE_REQUIRED`, `THREE_DS_PENDING`, `REFUNDED`, `FAILED`) — a PHP 7.1
+  stand-in for a PHP 8.1 `enum` — plus `isValid(string $value): bool`. `OperationData` is the
+  persistence value object `IPaymentRepository` (PRE-3467, not yet implemented) will work with:
+  public properties (`operationId`, `execCode`, `outcome`, `amount`, `orderId`, each with a
+  `/** @var */` docblock — PHP 7.1 predates typed properties) set through a validating
+  constructor. Per this library's "never trust external I/O" rule, `OperationData`'s constructor
+  is the validation boundary — it rejects an empty `operationId`/`execCode`/`orderId`, a negative
+  `amount`, or an `outcome` that isn't a `PaymentOutcome` constant, throwing the new
+  `InvalidOperationDataException` (6th subtype in the `Exceptions/` hierarchy above). `execCode`
+  is typed `string`, not `int`: Payplug's execution-codes documentation describes it as a numeric
+  string (e.g. `"4001"`, `"6003"`) from an open-ended, growing catalog, so only non-emptiness is
+  validated, not a specific digit pattern. `amount` is `int` centimes, matching
+  `AmountHelper::toCents()`'s output convention. Matching tests in `tests/Models/`.
 - `Utilities/Helpers/` holds small static utility classes — no CMS calls, no network calls; most
   are also dependency-free, but that's not a hard rule (see `PhoneHelper` below). The first one,
   `AmountHelper`, centralizes float↔centimes amount conversion

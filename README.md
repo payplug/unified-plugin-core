@@ -58,15 +58,54 @@ the merchant's actual PHP version. `make verify-71` is the real replacement chec
 
 `PayplugUnifiedCore\Exceptions\PayplugException` is the base type for every exception this
 library throws — catch it instead of a generic `\Exception` to handle any error raised by this
-package. Five domain-specific subtypes let callers catch more precisely:
+package. Six domain-specific subtypes let callers catch more precisely:
 
 - `RefundAmountException`
 - `PaymentNotFoundException`
 - `InvalidPhoneNumberException`
 - `CardOperationException`
 - `ApiException`
+- `InvalidOperationDataException`
 
 Each behaves like a standard PHP exception: `new SomeException($message, $code, $previous)`.
+
+## Models
+
+`PayplugUnifiedCore\Models\PaymentOutcome` expresses UPC's payment result intent to the CMS,
+decoupled from any CMS's native order-status vocabulary — a set of class constants (a PHP 7.1
+stand-in for a PHP 8.1 `enum`):
+
+```php
+use PayplugUnifiedCore\Models\PaymentOutcome;
+
+PaymentOutcome::PAID;             // 'paid'
+PaymentOutcome::AUTHORIZED;       // 'authorized'
+PaymentOutcome::CAPTURE_REQUIRED; // 'capture_required'
+PaymentOutcome::THREE_DS_PENDING; // 'three_ds_pending'
+PaymentOutcome::REFUNDED;         // 'refunded'
+PaymentOutcome::FAILED;           // 'failed'
+
+PaymentOutcome::isValid('paid');  // true
+PaymentOutcome::isValid('bogus'); // false
+```
+
+`PayplugUnifiedCore\Models\OperationData` is the persistence value object built from a Payplug API
+response or webhook payload — its constructor is this library's validation boundary for that data,
+throwing `InvalidOperationDataException` on an empty `operationId`/`execCode`/`orderId`, a negative
+`amount`, or an `outcome` that isn't a `PaymentOutcome` constant:
+
+```php
+use PayplugUnifiedCore\Models\OperationData;
+use PayplugUnifiedCore\Models\PaymentOutcome;
+
+$operation = new OperationData('op_123', '4001', PaymentOutcome::PAID, 4999, 'order_456');
+
+$operation->operationId; // 'op_123'
+$operation->execCode;    // '4001'
+$operation->outcome;     // 'paid'
+$operation->amount;      // 4999 (cents)
+$operation->orderId;     // 'order_456'
+```
 
 ## Utilities
 
