@@ -103,7 +103,7 @@ $operation = new OperationData('op_123', '4001', PaymentOutcome::PAID, 4999, 'or
 $operation->operationId; // 'op_123'
 $operation->execCode;    // '4001'
 $operation->outcome;     // 'paid'
-$operation->amount;      // 4999 (centimes)
+$operation->amount;      // 4999 (cents)
 $operation->orderId;     // 'order_456'
 ```
 
