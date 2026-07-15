@@ -54,6 +54,25 @@ is disabled in `composer.json` (`"config": {"platform-check": false}`), since it
 enforce this repo's own `require.php` (`>=7.4`, a build-tooling floor, not a runtime one) against
 the merchant's actual PHP version. `make verify-71` is the real replacement check.
 
+## Contracts
+
+`src/Contracts/` holds the 6 interfaces that define the boundary between this library and each
+consuming CMS plugin (first real consumer: UHF/Sylius) — designed around what a CMS needs to
+provide, not the not-yet-built Unified API's shape. Each ships with a docblock sketching a Sylius
+and a WooCommerce implementation; this library itself contains no concrete implementations.
+
+- `ILogger` — structured logging sink (`debug`/`info`/`error`), decoupled from any CMS's native
+  logger.
+- `IConfigurationRepository` — OAuth2 client credentials and Hosted Fields public key material,
+  sourced from each CMS's own settings storage.
+- `IPaymentRepository` — persists `OperationData` and tracks webhook processing state for
+  idempotency.
+- `IOrderStateMutator` — applies a `PaymentOutcome` to the CMS-native order, identified by order
+  ID (not a CMS-native object, since Sylius and WooCommerce orders share no common type).
+- `ILock` — per-operation mutex preventing a retried webhook from being processed concurrently
+  with itself.
+- `ITokenCache` — caches the OAuth2 JWT this library will use against the future Unified API.
+
 ## Exceptions
 
 `PayplugUnifiedCore\Exceptions\PayplugException` is the base type for every exception this

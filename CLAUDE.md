@@ -10,9 +10,11 @@ skeleton, static analysis, code style, git hooks, test harness, CI, and a Docker
 environment — the library now provides a domain exception hierarchy under `src/Exceptions/`, two
 utility classes under `src/Utilities/Helpers/` (`AmountHelper`, dependency-free, and `PhoneHelper`,
 backed by `giggsey/libphonenumber-for-php`, the library's first real runtime dependency — see
-"Constraints to preserve" for what that changed), and two value objects under `src/Models/`:
+"Constraints to preserve" for what that changed), two value objects under `src/Models/`:
 `PaymentOutcome` (payment-result constants) and `OperationData` (validating persistence value
-object). `Contracts/` is still empty, held open by `.gitkeep`, for later tickets.
+object), and the 6 core interfaces under `src/Contracts/` (`ILogger`, `IConfigurationRepository`,
+`IPaymentRepository`, `IOrderStateMutator`, `ILock`, `ITokenCache`) that define the boundary
+between UPC and each consuming CMS plugin.
 
 ## Commands
 
@@ -51,8 +53,8 @@ running Docker daemon. The image builds automatically the first time any target 
 - PSR-4 autoload root: `PayplugUnifiedCore\` → `src/`; dev-only autoload root:
   `PayplugUnifiedCore\Tests\` → `tests/`.
 - `src/` is organized into four top-level categories: `Contracts/`, `Exceptions/`, `Models/`,
-  `Utilities/Helpers/`. `Contracts/` is still empty (held open with `.gitkeep`); new code should
-  land under the matching category rather than introducing new top-level directories.
+  `Utilities/Helpers/`. New code should land under the matching category rather than introducing
+  new top-level directories.
 - `Exceptions/` holds the domain exception hierarchy: `PayplugException` (base, extends
   `\Exception` directly) and six subtypes — `RefundAmountException`, `PaymentNotFoundException`,
   `InvalidPhoneNumberException`, `CardOperationException`, `ApiException`,
@@ -83,6 +85,33 @@ running Docker daemon. The image builds automatically the first time any target 
   string (e.g. `"4001"`, `"6003"`) from an open-ended, growing catalog, so only non-emptiness is
   validated, not a specific digit pattern. `amount` is `int` centimes, matching
   `AmountHelper::toCents()`'s output convention. Matching tests in `tests/Models/`.
+- `Contracts/` holds the 6 interfaces that define the boundary between UPC and each consuming CMS
+  plugin (first real consumer: UHF/Sylius) — designed around what a CMS needs to provide, not
+  around the not-yet-built Unified API's shape, so they survive that later transition intact. All
+  6 are pure interfaces (no logic, nothing for PHPUnit to exercise — PHPStan level 8 verifies
+  signatures statically instead), PHP 7.1-compatible, each with a class-level docblock sketching
+  one Sylius and one WooCommerce implementation (illustrative only, not shipped code) instead of
+  the single-call-site `<code>` example used by `Utilities/Helpers/`. `ILogger` (`debug`/`info`/
+  `error`, each `(string $message, array $context = []): void`) is a structured logging sink
+  decoupled from any CMS's native logger. `IConfigurationRepository` (`get(string $key): ?string`,
+  `set(string $key, string $value): void`, `getClientId()`, `getClientSecret()`,
+  `getPublicKeyId()`, `getPublicKeyValue()`, all `: string`) sources OAuth2 credentials and Hosted
+  Fields public key material from each CMS's own settings storage. `IPaymentRepository`
+  (`getByOrderId`/`getByOperationId(string): OperationData`, both `@throws
+  PaymentNotFoundException` — the first user of that previously-unused exception subtype — plus
+  `save(OperationData): void`, `markTreated(string): void`, `isTreated(string): bool`) persists
+  `OperationData` and tracks webhook idempotency. `IOrderStateMutator`
+  (`apply(string $orderId, string $outcome): void`) applies a `PaymentOutcome` to the CMS-native
+  order — takes the order by ID rather than by CMS-native object, since Sylius's `OrderInterface`
+  and WooCommerce's `WC_Order` share no common type to hint against, so each implementation loads
+  its own native order internally. `ILock` (`acquire(string $key, int $ttlSeconds): bool`,
+  `release(string $key): void`) is a per-operation mutex preventing a retried webhook from being
+  processed concurrently with itself; `acquire()` returns `false` on contention rather than
+  throwing, since a webhook retry hitting an already-held lock is routine, not exceptional.
+  `ITokenCache` (`get(string $key): ?string`, `set(string $key, string $value, int $ttlSeconds):
+  void`, `delete(string $key): void`) caches the OAuth2 JWT UPC will use against the future
+  Unified API — the TTL/renewal timing is the caller's concern, this contract just stores a value
+  for whatever TTL it's given.
 - `Utilities/Helpers/` holds small static utility classes — no CMS calls, no network calls; most
   are also dependency-free, but that's not a hard rule (see `PhoneHelper` below). The first one,
   `AmountHelper`, centralizes float↔centimes amount conversion
@@ -113,6 +142,23 @@ running Docker daemon. The image builds automatically the first time any target 
   `InvalidPhoneNumberException` from both. This is the library's first helper with a real runtime
   dependency — see "Constraints to preserve" below for the PHP 7.1 floor implications that came
   with it, and `make verify-71` for how that floor is actually verified.
+
+## Documentation
+
+Every top-level `src/` category (`Contracts/`, `Exceptions/`, `Models/`, `Utilities/Helpers/`) is
+documented in two places, and both must be updated in the same task/PR whenever a category gains,
+loses, or changes a class — not left for a later cleanup pass:
+
+- **This file's Architecture section above** — one bullet per category, at implementation-detail
+  depth (real method signatures, validation rules, design rationale).
+- **`README.md`** — one section per category (`## Contracts`, `## Exceptions`, `## Models`,
+  `## Utilities`), at usage depth (what a consumer calls, or — for `Contracts/`, which has no
+  concrete implementations in this library — a one-line purpose per interface).
+
+This applies to whoever is doing the work, human or AI assistant: when a task adds a class to an
+existing category or introduces a new one, its own checklist includes updating both files, the
+way Task 7 of the PRE-3467 plan did for `CLAUDE.md` and a same-day follow-up did for `README.md`.
+Docs drifting out of sync with `src/` is a defect, not a nice-to-have.
 
 ## Constraints to preserve
 
