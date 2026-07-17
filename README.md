@@ -26,7 +26,9 @@ and runs `composer install` inside it, including the CaptainHook git hooks setup
 
 Other targets:
 
-- `make test` — run the PHPUnit suite
+- `make test` — run the unit PHPUnit suite
+- `make test-integration` — run the integration PHPUnit suite (empty as of PRE-3563, scaffolded
+  for the first ticket that adds real I/O)
 - `make coverage` — run the PHPUnit suite with a Clover coverage report at `build/logs/clover.xml`
 - `make stan` — PHPStan level 8 static analysis
 - `make cs-lint` — PHP-CS-Fixer dry-run diff
@@ -56,7 +58,7 @@ the merchant's actual PHP version. `make verify-71` is the real replacement chec
 
 ## Contracts
 
-`src/Contracts/` holds the 6 interfaces that define the boundary between this library and each
+`src/Contracts/` holds the 7 interfaces that define the boundary between this library and each
 consuming CMS plugin (first real consumer: UHF/Sylius) — designed around what a CMS needs to
 provide, not the not-yet-built Unified API's shape. Each ships with a docblock sketching a Sylius
 and a WooCommerce implementation; this library itself contains no concrete implementations.
@@ -72,12 +74,14 @@ and a WooCommerce implementation; this library itself contains no concrete imple
 - `ILock` — per-operation mutex preventing a retried webhook from being processed concurrently
   with itself.
 - `ITokenCache` — caches the OAuth2 JWT this library will use against the future Unified API.
+- `IOAuthHttpClient` — narrow HTTP contract for OAuth2 token exchange only (not a general-purpose
+  Unified API HTTP client, which is separate future scope).
 
 ## Exceptions
 
 `PayplugUnifiedCore\Exceptions\PayplugException` is the base type for every exception this
 library throws — catch it instead of a generic `\Exception` to handle any error raised by this
-package. Six domain-specific subtypes let callers catch more precisely:
+package. Seven domain-specific subtypes let callers catch more precisely:
 
 - `RefundAmountException`
 - `PaymentNotFoundException`
@@ -85,6 +89,7 @@ package. Six domain-specific subtypes let callers catch more precisely:
 - `CardOperationException`
 - `ApiException`
 - `InvalidOperationDataException`
+- `InvalidTokenException`
 
 Each behaves like a standard PHP exception: `new SomeException($message, $code, $previous)`.
 
@@ -126,6 +131,35 @@ $operation->amount;      // 4999 (cents)
 $operation->orderId;     // 'order_456'
 ```
 
+`PayplugUnifiedCore\Models\Token` is the validating value object for an OAuth2 token response,
+constructed only from data that has already crossed UPC's external boundary (an OAuth2
+token-endpoint response) — its constructor throws `InvalidTokenException` on an empty
+`accessToken`/`tokenType` or a non-positive `expiresIn`:
+
+```php
+use PayplugUnifiedCore\Models\Token;
+
+$token = new Token('jwt-access-token', 3600, 'Bearer');
+
+$token->accessToken; // 'jwt-access-token'
+$token->expiresIn;   // 3600
+$token->tokenType;   // 'Bearer'
+```
+
+`PayplugUnifiedCore\Models\AuthorizationRequest` is the output of
+`OAuth2Client::buildAuthorizationUrl()` — the redirect URL plus the `state`/`codeVerifier` the
+caller must persist (session) to complete the flow on callback:
+
+```php
+use PayplugUnifiedCore\Models\AuthorizationRequest;
+
+$request = new AuthorizationRequest($url, $state, $codeVerifier);
+
+$request->url;          // redirect the merchant's browser here
+$request->state;        // persist in session, compare on callback
+$request->codeVerifier; // persist in session, needed for the token exchange
+```
+
 ## Utilities
 
 `PayplugUnifiedCore\Utilities\Helpers\AmountHelper` converts amounts between a major-unit float
@@ -163,6 +197,50 @@ PhoneHelper::isMobile('06 12 34 56 78', 'FR'); // true
 
 `$countryCode` is a 2-letter ISO 3166-1 alpha-2 region code (the UK's is `GB`, not `UK`). Invalid
 or unparseable input throws `InvalidPhoneNumberException` from both methods.
+
+`PayplugUnifiedCore\Utilities\Helpers\PkceHelper` generates the PKCE material for the
+authorization-code flow:
+
+```php
+use PayplugUnifiedCore\Utilities\Helpers\PkceHelper;
+
+$codeVerifier = PkceHelper::generateCodeVerifier();
+$codeChallenge = PkceHelper::deriveCodeChallenge($codeVerifier); // S256 only
+$state = PkceHelper::generateState();
+```
+
+## Auth
+
+`PayplugUnifiedCore\Auth\OAuth2Client` implements the OAuth2/PKCE and client-credentials flows
+against the identity provider. It has no caching of its own and never calls `header()` — the
+caller performs the actual redirect:
+
+```php
+use PayplugUnifiedCore\Auth\OAuth2Client;
+
+$client = new OAuth2Client($httpClient, 'https://api.payplug.com', 'https://merchant.example.com/callback', 'payments', 'https://www.payplug.com');
+
+// Interactive merchant connection:
+$authorizationRequest = $client->buildAuthorizationUrl($clientId);
+// redirect to $authorizationRequest->url; persist ->state and ->codeVerifier in session
+
+// On the callback, after checking the returned state matches:
+$token = $client->exchangeAuthorizationCode($clientId, $code, $codeVerifier);
+
+// Background API calls:
+$token = $client->getClientCredentialsToken($clientId, $clientSecret);
+```
+
+`PayplugUnifiedCore\Auth\TokenManager` wraps the client-credentials flow with caching, for
+background API calls that shouldn't hit the identity provider on every request:
+
+```php
+use PayplugUnifiedCore\Auth\TokenManager;
+
+$tokenManager = new TokenManager($tokenCache, $client);
+
+$accessToken = $tokenManager->getValidToken($clientId, $clientSecret); // string JWT, ready for an Authorization header
+```
 
 ## License
 
