@@ -4,7 +4,7 @@ DOCKER_RUN := docker run --rm -v $(CURDIR):/app -w /app -u "$$(id -u):$$(id -g)"
 IMAGE_PHP71_CHECK := unified-plugin-core-php71-check
 DOCKER_RUN_PHP71_CHECK := docker run --rm -v $(CURDIR):/app -w /app -u "$$(id -u):$$(id -g)" $(IMAGE_PHP71_CHECK)
 
-.PHONY: build install test coverage stan cs-lint cs-fix quality shell build-php71-check build-vendor-nodev verify-71
+.PHONY: build install test test-integration coverage stan cs-lint cs-fix quality shell build-php71-check build-vendor-nodev verify-71
 
 build:
 	docker build -t $(IMAGE) .
@@ -14,6 +14,9 @@ install: build
 
 test: build
 	$(DOCKER_RUN) composer test
+
+test-integration: build
+	$(DOCKER_RUN) composer test-integration
 
 coverage: build
 	$(DOCKER_RUN) composer test-coverage

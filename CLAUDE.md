@@ -7,14 +7,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `payplug/unified-plugin-core` is a PHP library providing core foundations shared across Payplug
 e-commerce plugins (e.g. PrestaShop). Beyond the scaffolding — composer manifest, PSR-4 directory
 skeleton, static analysis, code style, git hooks, test harness, CI, and a Dockerized dev
-environment — the library now provides a domain exception hierarchy under `src/Exceptions/`, two
-utility classes under `src/Utilities/Helpers/` (`AmountHelper`, dependency-free, and `PhoneHelper`,
+environment — the library now provides a domain exception hierarchy under `src/Exceptions/`,
+three utility classes under `src/Utilities/Helpers/` (`AmountHelper`, dependency-free; `PhoneHelper`,
 backed by `giggsey/libphonenumber-for-php`, the library's first real runtime dependency — see
-"Constraints to preserve" for what that changed), two value objects under `src/Models/`:
-`PaymentOutcome` (payment-result constants) and `OperationData` (validating persistence value
-object), and the 6 core interfaces under `src/Contracts/` (`ILogger`, `IConfigurationRepository`,
-`IPaymentRepository`, `IOrderStateMutator`, `ILock`, `ITokenCache`) that define the boundary
-between UPC and each consuming CMS plugin.
+"Constraints to preserve" for what that changed; and `PkceHelper`, dependency-free), four value
+objects under `src/Models/`: `PaymentOutcome` (payment-result constants), `OperationData`
+(validating persistence value object), `Token` (validating OAuth2 token value object), and
+`AuthorizationRequest` (unvalidated PKCE redirect output), the 7 core interfaces under
+`src/Contracts/` (`ILogger`, `IConfigurationRepository`, `IPaymentRepository`,
+`IOrderStateMutator`, `ILock`, `ITokenCache`, `IOAuthHttpClient`) that define the boundary between
+UPC and each consuming CMS plugin, and `src/Auth/` (`OAuth2Client`, `TokenManager`) implementing
+the OAuth2/PKCE and client-credentials flows against the identity provider.
 
 ## Commands
 
@@ -24,7 +27,10 @@ running Docker daemon. The image builds automatically the first time any target 
 
 - `make install` — `composer install` inside the container (also runs
   `vendor/bin/captainhook install --force` via Composer's `post-install-cmd`)
-- `make test` — run the PHPUnit suite (`vendor/bin/phpunit tests`)
+- `make test` — run the unit PHPUnit suite (`vendor/bin/phpunit --testsuite=unit`)
+- `make test-integration` — run the integration PHPUnit suite (`vendor/bin/phpunit
+  --testsuite=integration`); empty as of PRE-3563, scaffolded for the first ticket that adds real
+  I/O
 - `make coverage` — run the PHPUnit suite with code coverage (PCOV, installed in the Docker image),
   writing a Clover XML report to `build/logs/clover.xml` (`build/` is gitignored); this is what CI's
   `coverage` job feeds to SonarCloud
@@ -52,20 +58,19 @@ running Docker daemon. The image builds automatically the first time any target 
 
 - PSR-4 autoload root: `PayplugUnifiedCore\` → `src/`; dev-only autoload root:
   `PayplugUnifiedCore\Tests\` → `tests/`.
-- `src/` is organized into four top-level categories: `Contracts/`, `Exceptions/`, `Models/`,
-  `Utilities/Helpers/`. New code should land under the matching category rather than introducing
-  new top-level directories.
+- `src/` is organized into five top-level categories: `Auth/`, `Contracts/`, `Exceptions/`,
+  `Models/`, `Utilities/Helpers/`. New code should land under the matching category rather than
+  introducing new top-level directories.
 - `Exceptions/` holds the domain exception hierarchy: `PayplugException` (base, extends
-  `\Exception` directly) and six subtypes — `RefundAmountException`, `PaymentNotFoundException`,
+  `\Exception` directly) and seven subtypes — `RefundAmountException`, `PaymentNotFoundException`,
   `InvalidPhoneNumberException`, `CardOperationException`, `ApiException`,
-  `InvalidOperationDataException` — each a plain marker class extending `PayplugException`
-  directly, with no custom constructor or properties, so CMS
-  plugins can catch specific error types instead of a generic exception. Any future addition to
-  this hierarchy should follow the same pattern: one class per file, no PHP 7.1-incompatible
-  syntax, and a matching test in `tests/Exceptions/` verifying the `instanceof` chain and the
-  inherited message/code/previous constructor contract. Because PHPStan level 8 includes the
-  `phpstan-phpunit` extension, an `assertInstanceOf()` check against a statically-provable
-  `extends` relationship needs an inline
+  `InvalidOperationDataException`, `InvalidTokenException` — each a plain marker class extending
+  `PayplugException` directly, with no custom constructor or properties, so CMS plugins can catch
+  specific error types instead of a generic exception. Any future addition to this hierarchy should
+  follow the same pattern: one class per file, no PHP 7.1-incompatible syntax, and a matching test
+  in `tests/Exceptions/` verifying the `instanceof` chain and the inherited message/code/previous
+  constructor contract. Because PHPStan level 8 includes the `phpstan-phpunit` extension, an
+  `assertInstanceOf()` check against a statically-provable `extends` relationship needs an inline
   `// @phpstan-ignore-next-line staticMethod.alreadyNarrowedType` comment directly above it (see
   any file in `tests/Exceptions/` for the exact pattern) — the assertion is kept as a regression
   guard, not removed.
@@ -85,10 +90,19 @@ running Docker daemon. The image builds automatically the first time any target 
   string (e.g. `"4001"`, `"6003"`) from an open-ended, growing catalog, so only non-emptiness is
   validated, not a specific digit pattern. `amount` is `int` centimes, matching
   `AmountHelper::toCents()`'s output convention. Matching tests in `tests/Models/`.
-- `Contracts/` holds the 6 interfaces that define the boundary between UPC and each consuming CMS
+  `Token` (PRE-3563) is the validating value object for a freshly-minted OAuth2 token response
+  (`accessToken`, `expiresIn`, `tokenType`, each with a `/** @var */` docblock), constructed only
+  from data that has already crossed UPC's external boundary (an OAuth2 token-endpoint
+  response) — its constructor rejects an empty `accessToken`/`tokenType` or a non-positive
+  `expiresIn`, throwing the new `InvalidTokenException` (7th subtype in the `Exceptions/`
+  hierarchy). `AuthorizationRequest` (PRE-3563) is the output of
+  `OAuth2Client::buildAuthorizationUrl()` (`url`, `state`, `codeVerifier`) — unlike every other
+  `Models/` value object, its constructor holds no validation, since it's produced entirely
+  internally by `OAuth2Client` and never crosses an external boundary itself.
+- `Contracts/` holds the 7 interfaces that define the boundary between UPC and each consuming CMS
   plugin (first real consumer: UHF/Sylius) — designed around what a CMS needs to provide, not
   around the not-yet-built Unified API's shape, so they survive that later transition intact. All
-  6 are pure interfaces (no logic, nothing for PHPUnit to exercise — PHPStan level 8 verifies
+  7 are pure interfaces (no logic, nothing for PHPUnit to exercise — PHPStan level 8 verifies
   signatures statically instead), PHP 7.1-compatible, each with a class-level docblock sketching
   one Sylius and one WooCommerce implementation (illustrative only, not shipped code) instead of
   the single-call-site `<code>` example used by `Utilities/Helpers/`. `ILogger` (`debug`/`info`/
@@ -111,7 +125,10 @@ running Docker daemon. The image builds automatically the first time any target 
   `ITokenCache` (`get(string $key): ?string`, `set(string $key, string $value, int $ttlSeconds):
   void`, `delete(string $key): void`) caches the OAuth2 JWT UPC will use against the future
   Unified API — the TTL/renewal timing is the caller's concern, this contract just stores a value
-  for whatever TTL it's given.
+  for whatever TTL it's given. `IOAuthHttpClient` (`post(string $url, array $formParams, array
+  $headers = []): array{status: int, body: string}`) is a narrow HTTP contract for OAuth2 token
+  exchange only (PRE-3563) — not a general-purpose Unified API HTTP client, which stays a separate,
+  future ticket so this contract doesn't prematurely guess that shape.
 - `Utilities/Helpers/` holds small static utility classes — no CMS calls, no network calls; most
   are also dependency-free, but that's not a hard rule (see `PhoneHelper` below). The first one,
   `AmountHelper`, centralizes float↔centimes amount conversion
@@ -142,18 +159,51 @@ running Docker daemon. The image builds automatically the first time any target 
   `InvalidPhoneNumberException` from both. This is the library's first helper with a real runtime
   dependency — see "Constraints to preserve" below for the PHP 7.1 floor implications that came
   with it, and `make verify-71` for how that floor is actually verified.
+- `PkceHelper` (PRE-3563, same `final class` + private-constructor pattern as `AmountHelper`/
+  `PhoneHelper`) generates the PKCE material for the authorization-code flow —
+  `generateCodeVerifier(): string` (RFC 7636 §4.1, cryptographically random via `random_bytes`),
+  `deriveCodeChallenge(string $codeVerifier): string` (S256 only — the `plain` method isn't
+  supported), and `generateState(): string` (CSRF guard). Matching test in
+  `tests/Utilities/Helpers/`, including a golden-value assertion against RFC 7636 Appendix B's own
+  worked example.
+- `src/Auth/` (PRE-3563) holds the two classes with real OAuth2 logic — everything else this
+  ticket adds (`IOAuthHttpClient`, `PkceHelper`, `Token`, `AuthorizationRequest`) is a contract,
+  helper, or value object slotting into an existing category. `OAuth2Client` (`final class`) is
+  pure token mechanics against the identity provider, with no caching of its own:
+  `buildAuthorizationUrl(string $clientId): AuthorizationRequest` generates the PKCE
+  verifier/challenge/state via `PkceHelper`
+  and returns the redirect URL without calling `header()` itself (the caller performs the actual
+  redirect); `exchangeAuthorizationCode(string $clientId, string $code, string $codeVerifier):
+  Token` and `getClientCredentialsToken(string $clientId, string $clientSecret): Token` both POST
+  via the injected `IOAuthHttpClient` and throw the existing `ApiException` on a non-2xx response
+  or a malformed body. The constructor takes `IOAuthHttpClient $httpClient, string $baseUrl,
+  string $redirectUri, string $scope, string $audience` — only the two *resource paths*
+  (`/oauth2/auth`, `/oauth2/token`) are `private const`s on the class; `$baseUrl` is a plain
+  constructor argument, replacing the legacy SDK's pattern of a hardcoded base-URL constant
+  swapped via a CI `sed` command for the `-qa` environment. `TokenManager` (`final class`) wraps
+  `OAuth2Client`'s client-credentials flow with `ITokenCache`, for background API calls:
+  `getValidToken(string $clientId, string $clientSecret): string` checks the cache (key:
+  `'upc_oauth_token:' . $clientId`), and on a miss calls
+  `OAuth2Client::getClientCredentialsToken()` and caches the resulting access-token string with a
+  TTL shortened by a fixed 60-second renewal margin (`max(1, expiresIn - 60)`) — a request should
+  never receive a token that's about to expire mid-flight. `getValidToken()` returns the bare
+  access-token `string`, not the full `Token` object: `ITokenCache` only stores a single string
+  value, so round-tripping `Token`'s other fields through the cache would mean either serializing
+  them (leaving a misleading `expiresIn` that reflects the original grant, not remaining time — the
+  cache's own shortened TTL is what actually enforces freshness) or not bothering, since
+  `tokenType` is always `"Bearer"` for this flow anyway.
 
 ## Documentation
 
-Every top-level `src/` category (`Contracts/`, `Exceptions/`, `Models/`, `Utilities/Helpers/`) is
-documented in two places, and both must be updated in the same task/PR whenever a category gains,
-loses, or changes a class — not left for a later cleanup pass:
+Every top-level `src/` category (`Auth/`, `Contracts/`, `Exceptions/`, `Models/`,
+`Utilities/Helpers/`) is documented in two places, and both must be updated in the same task/PR
+whenever a category gains, loses, or changes a class — not left for a later cleanup pass:
 
 - **This file's Architecture section above** — one bullet per category, at implementation-detail
   depth (real method signatures, validation rules, design rationale).
-- **`README.md`** — one section per category (`## Contracts`, `## Exceptions`, `## Models`,
-  `## Utilities`), at usage depth (what a consumer calls, or — for `Contracts/`, which has no
-  concrete implementations in this library — a one-line purpose per interface).
+- **`README.md`** — one section per category (`## Auth`, `## Contracts`, `## Exceptions`,
+  `## Models`, `## Utilities`), at usage depth (what a consumer calls, or — for `Contracts/`,
+  which has no concrete implementations in this library — a one-line purpose per interface).
 
 This applies to whoever is doing the work, human or AI assistant: when a task adds a class to an
 existing category or introduces a new one, its own checklist includes updating both files, the
@@ -211,7 +261,12 @@ Docs drifting out of sync with `src/` is a defect, not a nice-to-have.
   match `(feature|fix|hotfix|refactor)/(PRE|SMP)-\d+...` or `(release|patch)/x.y.z` with an
   optional `-rcN` suffix (e.g. `release/0.0.2` or `patch/0.0.2-rc0`); pre-commit also runs
   PHP-CS-Fixer.
-- `phpunit.xml.dist` — bootstraps `vendor/autoload.php`, single `unit` testsuite over `tests/`;
+- `phpunit.xml.dist` — bootstraps `vendor/autoload.php`, two testsuites: `unit` (`tests/`,
+  excluding `tests/Integration/`) and `integration` (`tests/Integration/`, scaffolded empty as of
+  PRE-3563 — nothing in the library does genuine I/O yet); `composer.json`'s `test`/`test-coverage`
+  scripts target `--testsuite=unit` explicitly (a CLI path argument to `phpunit` would otherwise
+  override the testsuite config entirely), and a new `test-integration` script targets
+  `--testsuite=integration`;
   `executionOrder="random"` + `resolveDependencies="true"` to surface hidden test-order coupling,
   `failOnWarning`/`failOnRisky`/`beStrictAboutTestsThatDoNotTestAnything`/
   `beStrictAboutOutputDuringTests` all `true` so silent problems (unverified mock expectations,
