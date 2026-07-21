@@ -13,7 +13,7 @@
         "php": ">=7.4",
         "giggsey/libphonenumber-for-php": "8.13.45",
         "giggsey/locale": "1.9",
-        "symfony/polyfill-mbstring": "1.30.0"
+        "symfony/polyfill-mbstring": "1.30.0 || ^1.31"
     },
     "require-dev": {
         "captainhook/captainhook": "^5.0",
