@@ -1,5 +1,6 @@
 IMAGE := unified-plugin-core-dev
-DOCKER_RUN := docker run --rm -v $(CURDIR):/app -w /app -u "$$(id -u):$$(id -g)" -e COMPOSER_HOME=/tmp/composer $(IMAGE)
+DOCKER_RUN_BASE := docker run --rm -v $(CURDIR):/app -w /app -u "$$(id -u):$$(id -g)" -e COMPOSER_HOME=/tmp/composer
+DOCKER_RUN := $(DOCKER_RUN_BASE) $(IMAGE)
 
 IMAGE_PHP71_CHECK := unified-plugin-core-php71-check
 DOCKER_RUN_PHP71_CHECK := docker run --rm -v $(CURDIR):/app -w /app -u "$$(id -u):$$(id -g)" $(IMAGE_PHP71_CHECK)
@@ -16,7 +17,7 @@ test: build
 	$(DOCKER_RUN) composer test
 
 test-integration: build
-	$(DOCKER_RUN) composer test-integration
+	$(DOCKER_RUN_BASE) $$( [ -f .env ] && echo --env-file .env ) $(IMAGE) composer test-integration
 
 coverage: build
 	$(DOCKER_RUN) composer test-coverage

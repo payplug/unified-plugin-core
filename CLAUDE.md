@@ -13,11 +13,13 @@ backed by `giggsey/libphonenumber-for-php`, the library's first real runtime dep
 "Constraints to preserve" for what that changed; and `PkceHelper`, dependency-free), four value
 objects under `src/Models/`: `PaymentOutcome` (payment-result constants), `OperationData`
 (validating persistence value object), `Token` (validating OAuth2 token value object), and
-`AuthorizationRequest` (unvalidated PKCE redirect output), the 7 core interfaces under
+`AuthorizationRequest` (unvalidated PKCE redirect output), the 8 core interfaces under
 `src/Contracts/` (`ILogger`, `IConfigurationRepository`, `IPaymentRepository`,
-`IOrderStateMutator`, `ILock`, `ITokenCache`, `IOAuthHttpClient`) that define the boundary between
-UPC and each consuming CMS plugin, and `src/Auth/` (`OAuth2Client`, `TokenManager`) implementing
-the OAuth2/PKCE and client-credentials flows against the identity provider.
+`IOrderStateMutator`, `ILock`, `ITokenCache`, `IOAuthHttpClient`, `IUnifiedApiHttpClient`) that
+define the boundary between UPC and each consuming CMS plugin, `src/Auth/` (`OAuth2Client`,
+`TokenManager`) implementing the OAuth2/PKCE and client-credentials flows against the identity
+provider, and `src/Services/` (`UnifiedApiPaymentService`) using that JWT to call the Unified API
+and fetch a payment.
 
 ## Commands
 
@@ -29,8 +31,11 @@ running Docker daemon. The image builds automatically the first time any target 
   `vendor/bin/captainhook install --force` via Composer's `post-install-cmd`)
 - `make test` — run the unit PHPUnit suite (`vendor/bin/phpunit --testsuite=unit`)
 - `make test-integration` — run the integration PHPUnit suite (`vendor/bin/phpunit
-  --testsuite=integration`); empty as of PRE-3563, scaffolded for the first ticket that adds real
-  I/O
+  --testsuite=integration`); first real test landed in PRE-3576
+  (`tests/Integration/UnifiedApiPaymentServiceTest.php`, requires VPN access) — copy
+  `.env.example` to `.env` and fill in the `UPC_IT_*` values (identity-provider + Unified API
+  credentials/URLs); the target passes `--env-file .env` to `docker run` when the file exists, and
+  the test itself calls `markTestSkipped()` when any required var is unset
 - `make coverage` — run the PHPUnit suite with code coverage (PCOV, installed in the Docker image),
   writing a Clover XML report to `build/logs/clover.xml` (`build/` is gitignored); this is what CI's
   `coverage` job feeds to SonarCloud
@@ -58,9 +63,9 @@ running Docker daemon. The image builds automatically the first time any target 
 
 - PSR-4 autoload root: `PayplugUnifiedCore\` → `src/`; dev-only autoload root:
   `PayplugUnifiedCore\Tests\` → `tests/`.
-- `src/` is organized into five top-level categories: `Auth/`, `Contracts/`, `Exceptions/`,
-  `Models/`, `Utilities/Helpers/`. New code should land under the matching category rather than
-  introducing new top-level directories.
+- `src/` is organized into six top-level categories: `Auth/`, `Contracts/`, `Exceptions/`,
+  `Models/`, `Services/`, `Utilities/Helpers/`. New code should land under the matching category
+  rather than introducing new top-level directories.
 - `Exceptions/` holds the domain exception hierarchy: `PayplugException` (base, extends
   `\Exception` directly) and seven subtypes — `RefundAmountException`, `PaymentNotFoundException`,
   `InvalidPhoneNumberException`, `CardOperationException`, `ApiException`,
@@ -99,10 +104,10 @@ running Docker daemon. The image builds automatically the first time any target 
   `OAuth2Client::buildAuthorizationUrl()` (`url`, `state`, `codeVerifier`) — unlike every other
   `Models/` value object, its constructor holds no validation, since it's produced entirely
   internally by `OAuth2Client` and never crosses an external boundary itself.
-- `Contracts/` holds the 7 interfaces that define the boundary between UPC and each consuming CMS
+- `Contracts/` holds the 8 interfaces that define the boundary between UPC and each consuming CMS
   plugin (first real consumer: UHF/Sylius) — designed around what a CMS needs to provide, not
   around the not-yet-built Unified API's shape, so they survive that later transition intact. All
-  7 are pure interfaces (no logic, nothing for PHPUnit to exercise — PHPStan level 8 verifies
+  8 are pure interfaces (no logic, nothing for PHPUnit to exercise — PHPStan level 8 verifies
   signatures statically instead), PHP 7.1-compatible, each with a class-level docblock sketching
   one Sylius and one WooCommerce implementation (illustrative only, not shipped code) instead of
   the single-call-site `<code>` example used by `Utilities/Helpers/`. `ILogger` (`debug`/`info`/
@@ -127,8 +132,12 @@ running Docker daemon. The image builds automatically the first time any target 
   Unified API — the TTL/renewal timing is the caller's concern, this contract just stores a value
   for whatever TTL it's given. `IOAuthHttpClient` (`post(string $url, array $formParams, array
   $headers = []): array{status: int, body: string}`) is a narrow HTTP contract for OAuth2 token
-  exchange only (PRE-3563) — not a general-purpose Unified API HTTP client, which stays a separate,
-  future ticket so this contract doesn't prematurely guess that shape.
+  exchange only (PRE-3563). `IUnifiedApiHttpClient` (`get(string $url, array $headers = []):
+  array{status: int, body: string}`) is a separate, GET-only contract (PRE-3576) for reading
+  Unified API resources — currently just payment retrieval, via `Services/UnifiedApiPaymentService`
+  — kept distinct from `IOAuthHttpClient` rather than extending it, since token exchange
+  (POST+form-encoded) and resource reads (GET+bearer token) are different enough shapes that
+  sharing one contract would blur both.
 - `Utilities/Helpers/` holds small static utility classes — no CMS calls, no network calls; most
   are also dependency-free, but that's not a hard rule (see `PhoneHelper` below). The first one,
   `AmountHelper`, centralizes float↔centimes amount conversion
@@ -192,17 +201,33 @@ running Docker daemon. The image builds automatically the first time any target 
   them (leaving a misleading `expiresIn` that reflects the original grant, not remaining time — the
   cache's own shortened TTL is what actually enforces freshness) or not bothering, since
   `tokenType` is always `"Bearer"` for this flow anyway.
+- `src/Services/` (PRE-3576) holds application services that use `Auth/`'s JWT to call the Unified
+  API. `UnifiedApiPaymentService` (`final class`) exposes `getPayment(string $paymentId):
+  array{status: int, body: string}` — resolves a client-credentials JWT via the injected
+  `TokenManager`, GETs `<baseUrl>/payments/<paymentId>` through the injected
+  `IUnifiedApiHttpClient`, and returns the raw HTTP response. It does not parse the response into a
+  value object: the full payment data model returned by the Unified API is explicitly out of scope
+  for this ticket, deferred to a future one. `client_id`/`client_secret`/`baseUrl` are plain
+  constructor arguments (matching `OAuth2Client`'s existing pattern) rather than sourced from
+  `IConfigurationRepository`, so `getPayment()` itself takes only `$paymentId`. A non-2xx HTTP
+  status or a malformed `IUnifiedApiHttpClient` response both throw the existing `ApiException`,
+  mirroring `OAuth2Client::requestToken()`'s exact precedent rather than introducing a new
+  exception subtype or an error-object return type. Matching unit test in `tests/Services/`
+  (mocked `IUnifiedApiHttpClient`), plus the first genuine `tests/Integration/` test — a real
+  curl-based `IOAuthHttpClient`/`IUnifiedApiHttpClient` double drives an actual call against a
+  staging fixture payment, gated behind `UPC_IT_*` environment variables (see `.env.example`) and
+  skipped when unset, since the target environment is VPN-only and can never run in CI.
 
 ## Documentation
 
-Every top-level `src/` category (`Auth/`, `Contracts/`, `Exceptions/`, `Models/`,
+Every top-level `src/` category (`Auth/`, `Contracts/`, `Exceptions/`, `Models/`, `Services/`,
 `Utilities/Helpers/`) is documented in two places, and both must be updated in the same task/PR
 whenever a category gains, loses, or changes a class — not left for a later cleanup pass:
 
 - **This file's Architecture section above** — one bullet per category, at implementation-detail
   depth (real method signatures, validation rules, design rationale).
 - **`README.md`** — one section per category (`## Auth`, `## Contracts`, `## Exceptions`,
-  `## Models`, `## Utilities`), at usage depth (what a consumer calls, or — for `Contracts/`,
+  `## Models`, `## Services`, `## Utilities`), at usage depth (what a consumer calls, or — for `Contracts/`,
   which has no concrete implementations in this library — a one-line purpose per interface).
 
 This applies to whoever is doing the work, human or AI assistant: when a task adds a class to an
