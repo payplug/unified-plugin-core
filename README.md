@@ -58,7 +58,7 @@ the merchant's actual PHP version. `make verify-71` is the real replacement chec
 
 ## Contracts
 
-`src/Contracts/` holds the 7 interfaces that define the boundary between this library and each
+`src/Contracts/` holds the 8 interfaces that define the boundary between this library and each
 consuming CMS plugin (first real consumer: UHF/Sylius) — designed around what a CMS needs to
 provide, not the not-yet-built Unified API's shape. Each ships with a docblock sketching a Sylius
 and a WooCommerce implementation; this library itself contains no concrete implementations.
@@ -76,6 +76,8 @@ and a WooCommerce implementation; this library itself contains no concrete imple
 - `ITokenCache` — caches the OAuth2 JWT this library will use against the future Unified API.
 - `IOAuthHttpClient` — narrow HTTP contract for OAuth2 token exchange only (not a general-purpose
   Unified API HTTP client, which is separate future scope).
+- `IUnifiedApiHttpClient` — narrow, GET-only HTTP contract for reading Unified API resources
+  (currently just payment retrieval).
 
 ## Exceptions
 
@@ -241,6 +243,25 @@ $tokenManager = new TokenManager($tokenCache, $client);
 
 $accessToken = $tokenManager->getValidToken($clientId, $clientSecret); // string JWT, ready for an Authorization header
 ```
+
+## Services
+
+`PayplugUnifiedCore\Services\UnifiedApiPaymentService` fetches a payment from the Unified API,
+authenticated via `TokenManager`'s client-credentials JWT. It returns the raw HTTP response — a
+parsed payment data model is separate, future scope:
+
+```php
+use PayplugUnifiedCore\Services\UnifiedApiPaymentService;
+
+$service = new UnifiedApiPaymentService($httpClient, $tokenManager, 'https://api.payplug.com', $clientId, $clientSecret);
+
+$response = $service->getPayment('5298ff38-883a-465f-b759-aec78cee203e');
+
+$response['status']; // 200
+$response['body'];   // raw JSON string from the Unified API
+```
+
+A non-2xx status, or a malformed `IUnifiedApiHttpClient` response, throws `ApiException`.
 
 ## License
 
