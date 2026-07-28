@@ -79,6 +79,7 @@ final class OAuth2ClientTest extends MockeryTestCase
 
         $this->expectException(ApiException::class);
         $this->expectExceptionMessage('OAuth2 token request failed with HTTP status 400.');
+        $this->expectExceptionCode(400);
 
         $client->exchangeAuthorizationCode('client_abc', 'bad_code', 'verifier_123');
     }
@@ -151,6 +152,7 @@ final class OAuth2ClientTest extends MockeryTestCase
 
         $this->expectException(ApiException::class);
         $this->expectExceptionMessage('OAuth2 token request failed with HTTP status 401.');
+        $this->expectExceptionCode(401);
 
         $client->getClientCredentialsToken('client_abc', 'wrong_secret');
     }

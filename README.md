@@ -244,6 +244,14 @@ $tokenManager = new TokenManager($tokenCache, $client);
 $accessToken = $tokenManager->getValidToken($clientId, $clientSecret); // string JWT, ready for an Authorization header
 ```
 
+`refreshToken()` is the escape hatch for a caller holding a token the API just rejected — it drops
+the cached entry and mints a replacement, so a token invalidated before its cache TTL expires
+(rotated secret, revoked grant, clock skew) doesn't keep failing every call:
+
+```php
+$accessToken = $tokenManager->refreshToken($clientId, $clientSecret); // bypasses the cache
+```
+
 ## Services
 
 `PayplugUnifiedCore\Services\UnifiedApiPaymentService` fetches a payment from the Unified API,
@@ -261,7 +269,27 @@ $response['status']; // 200
 $response['body'];   // raw JSON string from the Unified API
 ```
 
-A non-2xx status, or a malformed `IUnifiedApiHttpClient` response, throws `ApiException`.
+Error handling:
+
+- **404** throws `PaymentNotFoundException` — a *sibling* of `ApiException`, not a subclass, so
+  catching `ApiException` alone will not catch a missing payment.
+- **401** is retried once with a freshly minted JWT (the cached one is discarded first); only a
+  second 401 throws.
+- Any other non-2xx status, or a malformed `IUnifiedApiHttpClient` response, throws `ApiException`.
+
+Both exception types carry the HTTP status as their exception code, so you can branch without
+parsing the message. The code is `0` only when the response shape was unusable and no status was
+received:
+
+```php
+try {
+    $response = $service->getPayment($paymentId);
+} catch (PaymentNotFoundException $e) {
+    // $e->getCode() === 404
+} catch (ApiException $e) {
+    // $e->getCode() === 503, 500, … or 0 if the HTTP client returned an unusable shape
+}
+```
 
 ## License
 

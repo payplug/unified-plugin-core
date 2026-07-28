@@ -117,7 +117,8 @@ running Docker daemon. The image builds automatically the first time any target 
   `getPublicKeyId()`, `getPublicKeyValue()`, all `: string`) sources OAuth2 credentials and Hosted
   Fields public key material from each CMS's own settings storage. `IPaymentRepository`
   (`getByOrderId`/`getByOperationId(string): OperationData`, both `@throws
-  PaymentNotFoundException` — the first user of that previously-unused exception subtype — plus
+  PaymentNotFoundException` — the first user of that exception subtype, joined by
+  `Services/UnifiedApiPaymentService` mapping a Unified API 404 onto it — plus
   `save(OperationData): void`, `markTreated(string): void`, `isTreated(string): bool`) persists
   `OperationData` and tracks webhook idempotency. `IOrderStateMutator`
   (`apply(string $orderId, string $outcome): void`) applies a `PaymentOutcome` to the CMS-native
@@ -201,6 +202,14 @@ running Docker daemon. The image builds automatically the first time any target 
   them (leaving a misleading `expiresIn` that reflects the original grant, not remaining time — the
   cache's own shortened TTL is what actually enforces freshness) or not bothering, since
   `tokenType` is always `"Bearer"` for this flow anyway.
+  `refreshToken(string $clientId, string $clientSecret): string` is the companion escape hatch for
+  a caller holding a token the API just rejected: the 60-second renewal margin only covers a token
+  aging out, not one invalidated *early* (rotated client secret, revoked grant, changed
+  permissions, or clock skew wider than the margin), and without it a single poisoned cache entry
+  would fail every call until its TTL runs out. It calls `ITokenCache::delete()` — the first user
+  of that contract method — *before* attempting the mint rather than just overwriting afterwards,
+  so a failed mint still leaves the rejected token gone instead of replaying it; both methods share
+  a private `mintAndCache()`.
 - `src/Services/` (PRE-3576) holds application services that use `Auth/`'s JWT to call the Unified
   API. `UnifiedApiPaymentService` (`final class`) exposes `getPayment(string $paymentId):
   array{status: int, body: string}` — resolves a client-credentials JWT via the injected
@@ -212,7 +221,24 @@ running Docker daemon. The image builds automatically the first time any target 
   `IConfigurationRepository`, so `getPayment()` itself takes only `$paymentId`. A non-2xx HTTP
   status or a malformed `IUnifiedApiHttpClient` response both throw the existing `ApiException`,
   mirroring `OAuth2Client::requestToken()`'s exact precedent rather than introducing a new
-  exception subtype or an error-object return type. Matching unit test in `tests/Services/`
+  exception subtype or an error-object return type — with one exception: a **404** throws
+  `PaymentNotFoundException` instead, since "this payment doesn't exist" is a terminal outcome a
+  plugin handles differently from "the API is broken". Note that subtype is a *sibling* of
+  `ApiException` (both extend `PayplugException` directly), so a consumer catching `ApiException`
+  alone will **not** catch a missing payment; that's deliberate, and
+  `testPaymentNotFoundIsNotCaughtAsAnApiException` guards it, because re-parenting the exception
+  later would silently change every consumer's catch behavior. Both exception types carry the HTTP
+  status as their exception **code** (`getCode()`), so callers can branch on 404-vs-503 without
+  parsing the message; the code is `0` only when the client's response shape was unusable and no
+  status was ever received. `OAuth2Client::requestToken()` was updated to match. A 401 is the
+  other special case: it retries
+  once via `TokenManager::refreshToken()` (see the `Auth/` bullet above) before throwing, since a
+  cached JWT can be rejected while still inside its cache TTL. The retry is deliberately bounded at
+  one — a 401 on a token minted seconds ago is a credentials/permissions problem that retrying
+  cannot fix — and the non-2xx check runs once, after the possible retry, via a private `send()`
+  helper that also normalizes the response shape. Any future `Services/` class calling the Unified
+  API should follow the same 401 pattern; extract it into a shared base or trait once there's a
+  second one, rather than duplicating it a third time. Matching unit test in `tests/Services/`
   (mocked `IUnifiedApiHttpClient`), plus the first genuine `tests/Integration/` test — a real
   curl-based `IOAuthHttpClient`/`IUnifiedApiHttpClient` double drives an actual call against a
   staging fixture payment, gated behind `UPC_IT_*` environment variables (see `.env.example`) and
