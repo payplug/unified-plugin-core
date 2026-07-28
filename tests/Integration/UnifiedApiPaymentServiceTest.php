@@ -59,7 +59,7 @@ final class UnifiedApiPaymentServiceTest extends TestCase
 
         $body = json_decode($response['body'], true);
         self::assertIsArray($body);
-        self::assertSame($env['UPC_IT_PAYMENT_ID'], $body['id']);
+        self::assertSame($env['UPC_IT_PAYMENT_ID'], $body['id'] ?? null);
         self::assertSame('CAPTURED', $body['operations'][0]['status'] ?? null);
     }
 
