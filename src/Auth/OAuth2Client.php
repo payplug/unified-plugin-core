@@ -120,7 +120,7 @@ final class OAuth2Client
         $body = (string) $response['body'];
 
         if ($status < 200 || $status >= 300) {
-            throw new ApiException(\sprintf('OAuth2 token request failed with HTTP status %d.', $status));
+            throw new ApiException(\sprintf('OAuth2 token request failed with HTTP status %d.', $status), $status);
         }
 
         $data = json_decode($body, true);
