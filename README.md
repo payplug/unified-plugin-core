@@ -229,6 +229,9 @@ asynchronous payment notification (webhook/3DS confirmation), independently of a
 use PayplugUnifiedCore\Utilities\Helpers\WebhookNotificationHelper;
 
 $expectedHeader = $configurationRepository->get('payplug_webhook_authorization_header');
+if ($expectedHeader === null) {
+    throw new InvalidNotificationException('Webhook authorization header is not configured.');
+}
 
 $operationData = WebhookNotificationHelper::parse($headers, $rawBody, $expectedHeader);
 

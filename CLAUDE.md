@@ -8,9 +8,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 e-commerce plugins (e.g. PrestaShop). Beyond the scaffolding — composer manifest, PSR-4 directory
 skeleton, static analysis, code style, git hooks, test harness, CI, and a Dockerized dev
 environment — the library now provides a domain exception hierarchy under `src/Exceptions/`,
-three utility classes under `src/Utilities/Helpers/` (`AmountHelper`, dependency-free; `PhoneHelper`,
+five utility classes under `src/Utilities/Helpers/` (`AmountHelper`, dependency-free; `PhoneHelper`,
 backed by `giggsey/libphonenumber-for-php`, the library's first real runtime dependency — see
-"Constraints to preserve" for what that changed; and `PkceHelper`, dependency-free), four value
+"Constraints to preserve" for what that changed; `PkceHelper`, dependency-free; `ExecCodeMapper`,
+dependency-free, maps a Payplug execCode to a `PaymentOutcome`; and `WebhookNotificationHelper`,
+dependency-free, verifies and parses an asynchronous payment notification), four value
 objects under `src/Models/`: `PaymentOutcome` (payment-result constants), `OperationData`
 (validating persistence value object), `Token` (validating OAuth2 token value object), and
 `AuthorizationRequest` (unvalidated PKCE redirect output), the 8 core interfaces under
@@ -69,10 +71,11 @@ running Docker daemon. The image builds automatically the first time any target 
 - `Exceptions/` holds the domain exception hierarchy: `PayplugException` (base, extends
   `\Exception` directly) and eight subtypes — `RefundAmountException`, `PaymentNotFoundException`,
   `InvalidPhoneNumberException`, `CardOperationException`, `ApiException`,
-  `InvalidOperationDataException`, `InvalidTokenException`, `InvalidNotificationException` — each a plain marker class extending
-  `PayplugException` directly, with no custom constructor or properties, so CMS plugins can catch
-  specific error types instead of a generic exception. Any future addition to this hierarchy should
-  follow the same pattern: one class per file, no PHP 7.1-incompatible syntax, and a matching test
+  `InvalidOperationDataException`, `InvalidTokenException`, `InvalidNotificationException` — each
+  a plain marker class extending `PayplugException` directly, with no custom constructor or
+  properties, so CMS plugins can catch specific error types instead of a generic exception. Any
+  future addition to this hierarchy should follow the same pattern: one class per file, no PHP
+  7.1-incompatible syntax, and a matching test
   in `tests/Exceptions/` verifying the `instanceof` chain and the inherited message/code/previous
   constructor contract. Because PHPStan level 8 includes the `phpstan-phpunit` extension, an
   `assertInstanceOf()` check against a statically-provable `extends` relationship needs an inline

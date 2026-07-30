@@ -54,6 +54,10 @@ final class WebhookNotificationHelper
      */
     public static function verifySignature(array $headers, string $expectedAuthorizationHeader): void
     {
+        if ($expectedAuthorizationHeader === '') {
+            throw new InvalidNotificationException('No expected Authorization header is configured; cannot verify the notification.');
+        }
+
         foreach ($headers as $name => $value) {
             if (strcasecmp($name, 'Authorization') === 0) {
                 if (hash_equals($expectedAuthorizationHeader, $value)) {
@@ -71,8 +75,8 @@ final class WebhookNotificationHelper
      * @param array<string, string> $headers
      *
      * @throws InvalidNotificationException if the signature doesn't match, the body isn't valid
-     *                                       JSON, a required field is missing, or the resulting
-     *                                       OperationData is invalid
+     *                                       JSON, a required field is missing or has the wrong
+     *                                       type, or the resulting OperationData is invalid
      */
     public static function parse(array $headers, string $rawBody, string $expectedAuthorizationHeader): OperationData
     {
@@ -80,7 +84,14 @@ final class WebhookNotificationHelper
 
         $data = json_decode($rawBody, true);
 
-        if (!\is_array($data) || !isset($data['id'], $data['execCode'], $data['orderId'], $data['amount'])) {
+        if (
+            !\is_array($data)
+            || !isset($data['id'], $data['execCode'], $data['orderId'], $data['amount'])
+            || !\is_string($data['id'])
+            || !\is_string($data['execCode'])
+            || !\is_string($data['orderId'])
+            || !\is_int($data['amount'])
+        ) {
             throw new InvalidNotificationException('Webhook notification payload is malformed.');
         }
 

@@ -12,9 +12,11 @@ use PayplugUnifiedCore\Models\PaymentOutcome;
  * internal error taxonomy (100+ codes across acceptance/validation/bank/fraud categories)
  * far more detailed than any merchant-facing outcome needs. Only "0000" (success) is
  * distinguished; every other code — functional error, technical error, fraud decline, or
- * unknown — maps to FAILED. Extend this mapping if a future ticket needs finer-grained
- * outcomes (e.g. distinguishing AUTHORIZED/CAPTURE_REQUIRED), which isn't derivable from
- * execCode alone with the fields currently documented.
+ * unknown — maps to FAILED. The comparison is an exact string match, so `0`, `"0"`, or a float
+ * would NOT match "0000" and fall into FAILED instead — the safe direction. Extend this mapping
+ * if a future ticket needs finer-grained outcomes (e.g. distinguishing
+ * AUTHORIZED/CAPTURE_REQUIRED), which isn't derivable from execCode alone with the fields
+ * currently documented.
  *
  * Shared between the synchronous payment-creation flow and the asynchronous webhook
  * confirmation flow (see WebhookNotificationHelper), so this execCode -> PaymentOutcome

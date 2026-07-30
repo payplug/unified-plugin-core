@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PayplugUnifiedCore\Tests\Utilities\Helpers;
 
 use PayplugUnifiedCore\Exceptions\InvalidNotificationException;
+use PayplugUnifiedCore\Exceptions\InvalidOperationDataException;
 use PayplugUnifiedCore\Models\PaymentOutcome;
 use PayplugUnifiedCore\Utilities\Helpers\WebhookNotificationHelper;
 use PHPUnit\Framework\TestCase;
@@ -39,6 +40,14 @@ final class WebhookNotificationHelperTest extends TestCase
         $this->expectExceptionMessage('Webhook notification signature does not match.');
 
         WebhookNotificationHelper::verifySignature(['Authorization' => 'Bearer wrong'], 'Bearer secret123');
+    }
+
+    public function testVerifySignatureThrowsWhenExpectedAuthorizationHeaderIsEmpty(): void
+    {
+        $this->expectException(InvalidNotificationException::class);
+        $this->expectExceptionMessage('No expected Authorization header is configured; cannot verify the notification.');
+
+        WebhookNotificationHelper::verifySignature(['Authorization' => 'Bearer secret123'], '');
     }
 
     public function testParseReturnsOperationDataForAValidPaymentOperationNotification(): void
@@ -106,6 +115,16 @@ final class WebhookNotificationHelperTest extends TestCase
         WebhookNotificationHelper::parse(['Authorization' => 'Bearer secret123'], (string) $rawBody, 'Bearer secret123');
     }
 
+    public function testParseThrowsWhenAmountIsNotAnInteger(): void
+    {
+        $rawBody = json_encode(['id' => 'op_1', 'execCode' => '0000', 'orderId' => 'order_456', 'amount' => '49.99']);
+
+        $this->expectException(InvalidNotificationException::class);
+        $this->expectExceptionMessage('Webhook notification payload is malformed.');
+
+        WebhookNotificationHelper::parse(['Authorization' => 'Bearer secret123'], (string) $rawBody, 'Bearer secret123');
+    }
+
     public function testParseWrapsInvalidOperationDataExceptionIntoInvalidNotificationException(): void
     {
         $rawBody = json_encode(['id' => 'op_1', 'execCode' => '0000', 'orderId' => '', 'amount' => 4999]);
@@ -116,7 +135,7 @@ final class WebhookNotificationHelperTest extends TestCase
         try {
             WebhookNotificationHelper::parse(['Authorization' => 'Bearer secret123'], (string) $rawBody, 'Bearer secret123');
         } catch (InvalidNotificationException $e) {
-            self::assertNotNull($e->getPrevious());
+            self::assertInstanceOf(InvalidOperationDataException::class, $e->getPrevious());
 
             throw $e;
         }
