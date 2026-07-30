@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace PayplugUnifiedCore\Utilities\Helpers;
 
 use PayplugUnifiedCore\Exceptions\InvalidNotificationException;
+use PayplugUnifiedCore\Exceptions\InvalidOperationDataException;
+use PayplugUnifiedCore\Models\OperationData;
 
 /**
  * Parses and validates an asynchronous "Payment Operation" notification (webhook/3DS
@@ -21,6 +23,20 @@ use PayplugUnifiedCore\Exceptions\InvalidNotificationException;
  * $headers must be an associative array of header name => raw value, as extracted by the CMS
  * controller from the incoming HTTP request (e.g. a flattened PSR-7 getHeaderLine() map).
  * Header name lookup is case-insensitive, since HTTP header names are.
+ *
+ * parse() never itself returns an OperationData with outcome PaymentOutcome::THREE_DS_PENDING:
+ * per the platform's own execCode documentation, a fired asynchronous notification always
+ * carries a final code by the time it's sent (the transient in-flight codes are never emitted
+ * as a webhook). A CMS controller resolves a previously THREE_DS_PENDING OperationData to its
+ * final state by calling parse() on the webhook and persisting the OperationData it returns.
+ *
+ * Example:
+ * <code>
+ * $expectedHeader = $configurationRepository->get('payplug_webhook_authorization_header');
+ * $operationData = WebhookNotificationHelper::parse($headers, $rawBody, $expectedHeader);
+ * $paymentRepository->save($operationData);
+ * $orderStateMutator->apply($operationData->orderId, $operationData->outcome);
+ * </code>
  */
 final class WebhookNotificationHelper
 {
@@ -49,5 +65,31 @@ final class WebhookNotificationHelper
         }
 
         throw new InvalidNotificationException('Webhook notification is missing the Authorization header.');
+    }
+
+    /**
+     * @param array<string, string> $headers
+     *
+     * @throws InvalidNotificationException if the signature doesn't match, the body isn't valid
+     *                                       JSON, a required field is missing, or the resulting
+     *                                       OperationData is invalid
+     */
+    public static function parse(array $headers, string $rawBody, string $expectedAuthorizationHeader): OperationData
+    {
+        self::verifySignature($headers, $expectedAuthorizationHeader);
+
+        $data = json_decode($rawBody, true);
+
+        if (!\is_array($data) || !isset($data['id'], $data['execCode'], $data['orderId'], $data['amount'])) {
+            throw new InvalidNotificationException('Webhook notification payload is malformed.');
+        }
+
+        $outcome = ExecCodeMapper::toPaymentOutcome((string) $data['execCode']);
+
+        try {
+            return new OperationData((string) $data['id'], (string) $data['execCode'], $outcome, (int) $data['amount'], (string) $data['orderId']);
+        } catch (InvalidOperationDataException $e) {
+            throw new InvalidNotificationException('Webhook notification payload is invalid.', 0, $e);
+        }
     }
 }
