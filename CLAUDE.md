@@ -75,9 +75,9 @@ running Docker daemon. The image builds automatically the first time any target 
   a plain marker class extending `PayplugException` directly, with no custom constructor or
   properties, so CMS plugins can catch specific error types instead of a generic exception. Any
   future addition to this hierarchy should follow the same pattern: one class per file, no PHP
-  7.1-incompatible syntax, and a matching test
-  in `tests/Exceptions/` verifying the `instanceof` chain and the inherited message/code/previous
-  constructor contract. Because PHPStan level 8 includes the `phpstan-phpunit` extension, an
+  7.1-incompatible syntax, and a matching test in `tests/Exceptions/` verifying the `instanceof`
+  chain and the inherited message/code/previous constructor contract. Because PHPStan level 8
+  includes the `phpstan-phpunit` extension, an
   `assertInstanceOf()` check against a statically-provable `extends` relationship needs an inline
   `// @phpstan-ignore-next-line staticMethod.alreadyNarrowedType` comment directly above it (see
   any file in `tests/Exceptions/` for the exact pattern) — the assertion is kept as a regression

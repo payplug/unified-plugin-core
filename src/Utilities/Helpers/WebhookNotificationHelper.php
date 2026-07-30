@@ -50,7 +50,8 @@ final class WebhookNotificationHelper
     /**
      * @param array<string, string> $headers
      *
-     * @throws InvalidNotificationException if the Authorization header is missing or doesn't match
+     * @throws InvalidNotificationException if no expected header is configured, the Authorization
+     *                                       header is missing, or it doesn't match
      */
     public static function verifySignature(array $headers, string $expectedAuthorizationHeader): void
     {
