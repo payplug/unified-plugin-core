@@ -226,6 +226,7 @@ ExecCodeMapper::toPaymentOutcome('4008'); // PaymentOutcome::FAILED
 asynchronous payment notification (webhook/3DS confirmation), independently of any CMS:
 
 ```php
+use PayplugUnifiedCore\Exceptions\InvalidNotificationException;
 use PayplugUnifiedCore\Utilities\Helpers\WebhookNotificationHelper;
 
 $expectedHeader = $configurationRepository->get('payplug_webhook_authorization_header');
