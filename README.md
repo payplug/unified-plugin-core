@@ -83,7 +83,7 @@ and a WooCommerce implementation; this library itself contains no concrete imple
 
 `PayplugUnifiedCore\Exceptions\PayplugException` is the base type for every exception this
 library throws — catch it instead of a generic `\Exception` to handle any error raised by this
-package. Seven domain-specific subtypes let callers catch more precisely:
+package. Eight domain-specific subtypes let callers catch more precisely:
 
 - `RefundAmountException`
 - `PaymentNotFoundException`
@@ -92,6 +92,7 @@ package. Seven domain-specific subtypes let callers catch more precisely:
 - `ApiException`
 - `InvalidOperationDataException`
 - `InvalidTokenException`
+- `InvalidNotificationException`
 
 Each behaves like a standard PHP exception: `new SomeException($message, $code, $previous)`.
 
@@ -210,6 +211,38 @@ $codeVerifier = PkceHelper::generateCodeVerifier();
 $codeChallenge = PkceHelper::deriveCodeChallenge($codeVerifier); // S256 only
 $state = PkceHelper::generateState();
 ```
+
+`PayplugUnifiedCore\Utilities\Helpers\ExecCodeMapper` maps a Payplug `execCode` to a
+`PaymentOutcome`:
+
+```php
+use PayplugUnifiedCore\Utilities\Helpers\ExecCodeMapper;
+
+ExecCodeMapper::toPaymentOutcome('0000'); // PaymentOutcome::PAID
+ExecCodeMapper::toPaymentOutcome('4008'); // PaymentOutcome::FAILED
+```
+
+`PayplugUnifiedCore\Utilities\Helpers\WebhookNotificationHelper` verifies and parses an
+asynchronous payment notification (webhook/3DS confirmation), independently of any CMS:
+
+```php
+use PayplugUnifiedCore\Exceptions\InvalidNotificationException;
+use PayplugUnifiedCore\Utilities\Helpers\WebhookNotificationHelper;
+
+$expectedHeader = $configurationRepository->get('payplug_webhook_authorization_header');
+if ($expectedHeader === null) {
+    throw new InvalidNotificationException('Webhook authorization header is not configured.');
+}
+
+$operationData = WebhookNotificationHelper::parse($headers, $rawBody, $expectedHeader);
+
+$paymentRepository->save($operationData);
+$orderStateMutator->apply($operationData->orderId, $operationData->outcome);
+```
+
+Both `verifySignature()` and `parse()` throw `InvalidNotificationException` — on a missing or
+non-matching `Authorization` header, a malformed body, a missing required field, or an invalid
+resulting `OperationData`.
 
 ## Auth
 

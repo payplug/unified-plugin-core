@@ -8,9 +8,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 e-commerce plugins (e.g. PrestaShop). Beyond the scaffolding — composer manifest, PSR-4 directory
 skeleton, static analysis, code style, git hooks, test harness, CI, and a Dockerized dev
 environment — the library now provides a domain exception hierarchy under `src/Exceptions/`,
-three utility classes under `src/Utilities/Helpers/` (`AmountHelper`, dependency-free; `PhoneHelper`,
+five utility classes under `src/Utilities/Helpers/` (`AmountHelper`, dependency-free; `PhoneHelper`,
 backed by `giggsey/libphonenumber-for-php`, the library's first real runtime dependency — see
-"Constraints to preserve" for what that changed; and `PkceHelper`, dependency-free), four value
+"Constraints to preserve" for what that changed; `PkceHelper`, dependency-free; `ExecCodeMapper`,
+dependency-free, maps a Payplug execCode to a `PaymentOutcome`; and `WebhookNotificationHelper`,
+dependency-free, verifies and parses an asynchronous payment notification), four value
 objects under `src/Models/`: `PaymentOutcome` (payment-result constants), `OperationData`
 (validating persistence value object), `Token` (validating OAuth2 token value object), and
 `AuthorizationRequest` (unvalidated PKCE redirect output), the 8 core interfaces under
@@ -67,14 +69,15 @@ running Docker daemon. The image builds automatically the first time any target 
   `Models/`, `Services/`, `Utilities/Helpers/`. New code should land under the matching category
   rather than introducing new top-level directories.
 - `Exceptions/` holds the domain exception hierarchy: `PayplugException` (base, extends
-  `\Exception` directly) and seven subtypes — `RefundAmountException`, `PaymentNotFoundException`,
+  `\Exception` directly) and eight subtypes — `RefundAmountException`, `PaymentNotFoundException`,
   `InvalidPhoneNumberException`, `CardOperationException`, `ApiException`,
-  `InvalidOperationDataException`, `InvalidTokenException` — each a plain marker class extending
-  `PayplugException` directly, with no custom constructor or properties, so CMS plugins can catch
-  specific error types instead of a generic exception. Any future addition to this hierarchy should
-  follow the same pattern: one class per file, no PHP 7.1-incompatible syntax, and a matching test
-  in `tests/Exceptions/` verifying the `instanceof` chain and the inherited message/code/previous
-  constructor contract. Because PHPStan level 8 includes the `phpstan-phpunit` extension, an
+  `InvalidOperationDataException`, `InvalidTokenException`, `InvalidNotificationException` — each
+  a plain marker class extending `PayplugException` directly, with no custom constructor or
+  properties, so CMS plugins can catch specific error types instead of a generic exception. Any
+  future addition to this hierarchy should follow the same pattern: one class per file, no PHP
+  7.1-incompatible syntax, and a matching test in `tests/Exceptions/` verifying the `instanceof`
+  chain and the inherited message/code/previous constructor contract. Because PHPStan level 8
+  includes the `phpstan-phpunit` extension, an
   `assertInstanceOf()` check against a statically-provable `extends` relationship needs an inline
   `// @phpstan-ignore-next-line staticMethod.alreadyNarrowedType` comment directly above it (see
   any file in `tests/Exceptions/` for the exact pattern) — the assertion is kept as a regression
@@ -176,6 +179,38 @@ running Docker daemon. The image builds automatically the first time any target 
   supported), and `generateState(): string` (CSRF guard). Matching test in
   `tests/Utilities/Helpers/`, including a golden-value assertion against RFC 7636 Appendix B's own
   worked example.
+- `ExecCodeMapper` (PRE-3588, same `final class` + private-constructor pattern as the helpers
+  above) maps a Payplug `execCode` to `PaymentOutcome::PAID` (only for `"0000"`) or
+  `PaymentOutcome::FAILED` (everything else) via `toPaymentOutcome(string $execCode): string`.
+  Deliberately minimal: the platform's execCode catalog is a cross-processor internal error
+  taxonomy far more detailed than any merchant-facing outcome needs, and finer-grained outcomes
+  (`AUTHORIZED`/`CAPTURE_REQUIRED`) aren't derivable from `execCode` alone with the webhook fields
+  currently documented. Shared between the synchronous payment-creation flow (PRE-3587) and the
+  asynchronous webhook confirmation flow (`WebhookNotificationHelper`, below), so this mapping
+  decision lives in exactly one place. Matching test in `tests/Utilities/Helpers/`.
+- `WebhookNotificationHelper` (PRE-3588, same pattern) parses and validates an asynchronous
+  "Payment Operation" notification (webhook/3DS confirmation), independently of the CMS that
+  receives the HTTP request. `verifySignature(array $headers, string $expectedAuthorizationHeader): void`
+  does a case-insensitive lookup of an `Authorization` key in `$headers` and a constant-time
+  (`hash_equals()`) comparison against `$expectedAuthorizationHeader` — the platform's webhook
+  receiver has no HMAC/signature-over-body scheme, only a shared secret configured at
+  webhook-creation time and echoed back in that header (Basic or Bearer, merchant's choice); it
+  throws `InvalidNotificationException` if the header is absent or doesn't match.
+  `parse(array $headers, string $rawBody, string $expectedAuthorizationHeader): OperationData`
+  calls `verifySignature()`, decodes `$rawBody` as JSON, validates presence of `id`/`execCode`/
+  `orderId`/`amount`, maps the outcome via `ExecCodeMapper`, and returns `new OperationData(...)`
+  — reusing the existing value object rather than introducing a new one, since its shape matches
+  exactly. `InvalidOperationDataException` from that constructor is wrapped into
+  `InvalidNotificationException` (same pattern as `OAuth2Client::requestToken()` wrapping
+  `InvalidTokenException` into `ApiException`). `parse()` never itself returns
+  `PaymentOutcome::THREE_DS_PENDING`: the platform's execCode documentation states the transient
+  in-flight codes are never emitted as an asynchronous notification, so a fired webhook always
+  carries a final code. A CMS controller resolves a previously `THREE_DS_PENDING` `OperationData`
+  (set by PRE-3587's synchronous flow) to its final state by calling `parse()` on the webhook and
+  persisting the `OperationData` it returns via `IPaymentRepository`/`IOrderStateMutator` — this is
+  the "interface exploitable par un contrôleur CMS" this ticket exists to provide; no new
+  `Contract` was needed since this logic isn't implemented differently per CMS. Matching test in
+  `tests/Utilities/Helpers/`.
 - `src/Auth/` (PRE-3563) holds the two classes with real OAuth2 logic — everything else this
   ticket adds (`IOAuthHttpClient`, `PkceHelper`, `Token`, `AuthorizationRequest`) is a contract,
   helper, or value object slotting into an existing category. `OAuth2Client` (`final class`) is
