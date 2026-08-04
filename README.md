@@ -76,8 +76,9 @@ and a WooCommerce implementation; this library itself contains no concrete imple
 - `ITokenCache` — caches the OAuth2 JWT this library will use against the future Unified API.
 - `IOAuthHttpClient` — narrow HTTP contract for OAuth2 token exchange only (not a general-purpose
   Unified API HTTP client, which is separate future scope).
-- `IUnifiedApiHttpClient` — narrow, GET-only HTTP contract for reading Unified API resources
-  (currently just payment retrieval).
+- `IUnifiedApiHttpClient` — narrow HTTP contract for calling the Unified API: `get()` for reading
+  resources (payment retrieval) and `postJson()` for creating them (hosted-fields payment
+  creation).
 
 ## Exceptions
 
@@ -161,6 +162,22 @@ $request = new AuthorizationRequest($url, $state, $codeVerifier);
 $request->url;          // redirect the merchant's browser here
 $request->state;        // persist in session, compare on callback
 $request->codeVerifier; // persist in session, needed for the token exchange
+```
+
+`PayplugUnifiedCore\Models\HostedPaymentResult` is the output of
+`UnifiedApiHostedPaymentService::createHostedPayment()` — like `AuthorizationRequest`, its
+constructor holds no validation, since it's produced entirely internally from an already-checked
+Unified API response. `redirectUrl` is `null` on a direct success, or the URL to redirect the
+end-user to for 3DS/SCA authentication otherwise:
+
+```php
+use PayplugUnifiedCore\Models\HostedPaymentResult;
+
+$result = new HostedPaymentResult(200, $rawJsonBody, null);
+
+$result->status;      // HTTP status
+$result->body;        // raw JSON string from the Unified API
+$result->redirectUrl; // null (direct success) or a 3DS redirect URL
 ```
 
 ## Utilities
@@ -323,6 +340,56 @@ try {
     // $e->getCode() === 503, 500, … or 0 if the HTTP client returned an unusable shape
 }
 ```
+
+`PayplugUnifiedCore\Services\UnifiedApiHostedPaymentService` creates/confirms a payment from a
+hosted-fields token (`hfToken`), the create-side sibling of `UnifiedApiPaymentService`. `$accountId`
+identifies the Unified API processing account and is unrelated to the OAuth2 `$clientId`:
+
+```php
+use PayplugUnifiedCore\Services\UnifiedApiHostedPaymentService;
+
+$service = new UnifiedApiHostedPaymentService($httpClient, $tokenManager, 'https://api.payplug.com', $clientId, $clientSecret, $accountId);
+
+$result = $service->createHostedPayment(
+    $hfToken,
+    1000,
+    'EUR',
+    'order_456',
+    ['ip' => $request->getClientIp(), 'referrer' => $request->headers->get('referer'), 'userAgent' => $request->headers->get('user-agent')], // browser, optional but strongly recommended
+    ['id' => $customerId, 'email' => $customerEmail], // customer, optional
+    'Order #456',                                     // description, optional
+    ['details' => ['fullName' => 'John Snow', 'selectedBrand' => 'visa']], // paymentMethod, optional
+    'MY SHOP Order #456',                                     // descriptor, optional — bank statement label
+    'https://shop.example.com/payplug/notification',         // notificationUrl, optional — webhook URL
+    'internal_ref_789'                                        // extraData, optional — echoed back in the notification
+);
+
+$result->status;      // HTTP status
+$result->body;         // raw JSON string from the Unified API
+$result->redirectUrl;  // null on direct success; a 3DS/SCA redirect URL when authentication is pending
+```
+
+Only `hfToken`/`amount`/`currency`/`orderId` are required; every other parameter is optional (`null`
+by default) — matching the Unified API's own doc, where only `account` and `amount` are required at
+the request's top level; the `paymentMethod` key itself is omitted from the request entirely when
+the `$paymentMethod` argument is `null`, rather than sent as an empty object. `browser` and
+`customer`, when passed, each require *all* their sub-fields together (the schema has no partial
+form for either) — but passing `browser` whenever a real end-user request is available is strongly
+recommended: card networks use it to decide whether a 3DS challenge can be skipped (frictionless)
+instead of always being forced, which is directly relevant to this service's own
+3DS-pending-vs-direct-success behavior. `descriptor`/`notificationUrl`/`extraData` are plain
+pass-throughs (bank statement label, webhook URL, and free-form text echoed back in that webhook) —
+deliberately not extended further to cover recurring/subscription or marketplace-specific fields
+the Unified API also exposes, since those are outside this service's scope (hosted-fields card
+payment + 3DS).
+
+Payments are always created with immediate capture (`capture: true` — there is no capture parameter
+on `createHostedPayment()`, so an authorization-only hold isn't supported). Error handling mirrors
+`getPayment()`'s 401-retry and non-2xx-throws-`ApiException` behavior, minus the 404 special case
+(there's no resource being looked up by id here). Mapping the eventual payment outcome to a
+`PaymentOutcome` constant — once the asynchronous webhook/3DS-return confirmation comes back — is a
+separate concern (see PRE-3588); this service only reports what's known synchronously, at creation
+time.
 
 ## License
 

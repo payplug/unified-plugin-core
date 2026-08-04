@@ -34,6 +34,11 @@ final class CurlHttpClient implements IOAuthHttpClient, IUnifiedApiHttpClient
         return $this->request('GET', $url, $headers);
     }
 
+    public function postJson(string $url, array $body, array $headers = []): array
+    {
+        return $this->request('POST', $url, $headers, (string) json_encode($body));
+    }
+
     /**
      * @param 'GET'|'POST' $method
      * @param array<string, string> $headers
