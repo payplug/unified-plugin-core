@@ -20,8 +20,10 @@ objects under `src/Models/`: `PaymentOutcome` (payment-result constants), `Opera
 `IOrderStateMutator`, `ILock`, `ITokenCache`, `IOAuthHttpClient`, `IUnifiedApiHttpClient`) that
 define the boundary between UPC and each consuming CMS plugin, `src/Auth/` (`OAuth2Client`,
 `TokenManager`) implementing the OAuth2/PKCE and client-credentials flows against the identity
-provider, and `src/Services/` (`UnifiedApiPaymentService`) using that JWT to call the Unified API
-and fetch a payment.
+provider, and `src/Services/` (`AbstractUnifiedApiService`, `UnifiedApiPaymentService`,
+`UnifiedApiHostedPaymentService`) using that JWT to call the Unified API to fetch a payment
+(PRE-3576) and, as of PRE-3587, to create/confirm one from a hosted-fields token, producing a
+`HostedPaymentResult`.
 
 ## Commands
 
@@ -106,7 +108,15 @@ running Docker daemon. The image builds automatically the first time any target 
   hierarchy). `AuthorizationRequest` (PRE-3563) is the output of
   `OAuth2Client::buildAuthorizationUrl()` (`url`, `state`, `codeVerifier`) — unlike every other
   `Models/` value object, its constructor holds no validation, since it's produced entirely
-  internally by `OAuth2Client` and never crosses an external boundary itself.
+  internally by `OAuth2Client` and never crosses an external boundary itself. `HostedPaymentResult`
+  (PRE-3587) is the output of `UnifiedApiHostedPaymentService::createHostedPayment()` (`status`,
+  `body`, `redirectUrl`) — same unvalidated-constructor reasoning as `AuthorizationRequest`, since
+  it's produced entirely internally from a Unified API response the service has already checked for
+  a 2xx status. `redirectUrl` is the one derived field, computed from the response body's
+  `redirect.url` (nullable): `null` on a direct success, or the URL to redirect the end-user to for
+  3DS/SCA authentication otherwise. It deliberately does not map to a `PaymentOutcome` constant —
+  that mapping, for the asynchronous webhook/3DS-return confirmation that comes later, is PRE-3588's
+  job, not this ticket's.
 - `Contracts/` holds the 8 interfaces that define the boundary between UPC and each consuming CMS
   plugin (first real consumer: UHF/Sylius) — designed around what a CMS needs to provide, not
   around the not-yet-built Unified API's shape, so they survive that later transition intact. All
@@ -136,12 +146,17 @@ running Docker daemon. The image builds automatically the first time any target 
   Unified API — the TTL/renewal timing is the caller's concern, this contract just stores a value
   for whatever TTL it's given. `IOAuthHttpClient` (`post(string $url, array $formParams, array
   $headers = []): array{status: int, body: string}`) is a narrow HTTP contract for OAuth2 token
-  exchange only (PRE-3563). `IUnifiedApiHttpClient` (`get(string $url, array $headers = []):
-  array{status: int, body: string}`) is a separate, GET-only contract (PRE-3576) for reading
-  Unified API resources — currently just payment retrieval, via `Services/UnifiedApiPaymentService`
-  — kept distinct from `IOAuthHttpClient` rather than extending it, since token exchange
-  (POST+form-encoded) and resource reads (GET+bearer token) are different enough shapes that
-  sharing one contract would blur both.
+  exchange only (PRE-3563). `IUnifiedApiHttpClient` (PRE-3576, extended PRE-3587) is a separate
+  contract for calling the Unified API — `get(string $url, array $headers = []): array{status: int,
+  body: string}` for reading resources (payment retrieval, via `Services/UnifiedApiPaymentService`)
+  and `postJson(string $url, array $body, array $headers = []): array{status: int, body: string}`
+  for creating them (hosted-fields payment creation, via
+  `Services/UnifiedApiHostedPaymentService`) — kept distinct from `IOAuthHttpClient` rather than
+  extending it, since token exchange (POST+form-encoded) and Unified API calls (GET/POST+bearer
+  token+JSON) are different enough shapes that sharing one contract would blur both. `postJson` is
+  named distinctly from `IOAuthHttpClient::post()` (not reusing "post") specifically so a class
+  implementing both contracts — as `tests/Integration/Support/CurlHttpClient` does — never has to
+  guess which body encoding a single shared method name should apply.
 - `Utilities/Helpers/` holds small static utility classes — no CMS calls, no network calls; most
   are also dependency-free, but that's not a hard rule (see `PhoneHelper` below). The first one,
   `AmountHelper`, centralizes float↔centimes amount conversion
@@ -245,18 +260,24 @@ running Docker daemon. The image builds automatically the first time any target 
   of that contract method — *before* attempting the mint rather than just overwriting afterwards,
   so a failed mint still leaves the rejected token gone instead of replaying it; both methods share
   a private `mintAndCache()`.
-- `src/Services/` (PRE-3576) holds application services that use `Auth/`'s JWT to call the Unified
-  API. `UnifiedApiPaymentService` (`final class`) exposes `getPayment(string $paymentId):
-  array{status: int, body: string}` — resolves a client-credentials JWT via the injected
-  `TokenManager`, GETs `<baseUrl>/payments/<paymentId>` through the injected
-  `IUnifiedApiHttpClient`, and returns the raw HTTP response. It does not parse the response into a
-  value object: the full payment data model returned by the Unified API is explicitly out of scope
-  for this ticket, deferred to a future one. `client_id`/`client_secret`/`baseUrl` are plain
-  constructor arguments (matching `OAuth2Client`'s existing pattern) rather than sourced from
-  `IConfigurationRepository`, so `getPayment()` itself takes only `$paymentId`. A non-2xx HTTP
-  status or a malformed `IUnifiedApiHttpClient` response both throw the existing `ApiException`,
-  mirroring `OAuth2Client::requestToken()`'s exact precedent rather than introducing a new
-  exception subtype or an error-object return type — with one exception: a **404** throws
+- `src/Services/` (PRE-3576, extended PRE-3587) holds application services that use `Auth/`'s JWT
+  to call the Unified API. `AbstractUnifiedApiService` (`abstract class`, PRE-3587) holds the
+  mechanics shared by every concrete service: resolving a client-credentials JWT via the injected
+  `TokenManager`/`IUnifiedApiHttpClient`/`baseUrl`/`clientId`/`clientSecret` (all `protected`
+  constructor-set properties), a protected `sendGet(string $url)` and
+  `sendPostJson(string $url, array $body)`, and the 401-retry-then-normalize logic shared by both —
+  extracted from `UnifiedApiPaymentService` once it got a sibling
+  (`UnifiedApiHostedPaymentService`), per this file's own prior instruction not to duplicate the
+  pattern a third time. `UnifiedApiPaymentService` (`final class`, extends
+  `AbstractUnifiedApiService`) exposes `getPayment(string $paymentId): array{status: int, body:
+  string}` — GETs `<baseUrl>/payments/<paymentId>` and returns the raw HTTP response. It does not
+  parse the response into a value object: the full payment data model returned by the Unified API
+  is explicitly out of scope for this ticket, deferred to a future one. `client_id`/`client_secret`/
+  `baseUrl` are plain constructor arguments (matching `OAuth2Client`'s existing pattern) rather than
+  sourced from `IConfigurationRepository`, so `getPayment()` itself takes only `$paymentId`. A
+  non-2xx HTTP status or a malformed `IUnifiedApiHttpClient` response both throw the existing
+  `ApiException`, mirroring `OAuth2Client::requestToken()`'s exact precedent rather than introducing
+  a new exception subtype or an error-object return type — with one exception: a **404** throws
   `PaymentNotFoundException` instead, since "this payment doesn't exist" is a terminal outcome a
   plugin handles differently from "the API is broken". Note that subtype is a *sibling* of
   `ApiException` (both extend `PayplugException` directly), so a consumer catching `ApiException`
@@ -266,18 +287,78 @@ running Docker daemon. The image builds automatically the first time any target 
   status as their exception **code** (`getCode()`), so callers can branch on 404-vs-503 without
   parsing the message; the code is `0` only when the client's response shape was unusable and no
   status was ever received. `OAuth2Client::requestToken()` was updated to match. A 401 is the
-  other special case: it retries
-  once via `TokenManager::refreshToken()` (see the `Auth/` bullet above) before throwing, since a
-  cached JWT can be rejected while still inside its cache TTL. The retry is deliberately bounded at
-  one — a 401 on a token minted seconds ago is a credentials/permissions problem that retrying
-  cannot fix — and the non-2xx check runs once, after the possible retry, via a private `send()`
-  helper that also normalizes the response shape. Any future `Services/` class calling the Unified
-  API should follow the same 401 pattern; extract it into a shared base or trait once there's a
-  second one, rather than duplicating it a third time. Matching unit test in `tests/Services/`
-  (mocked `IUnifiedApiHttpClient`), plus the first genuine `tests/Integration/` test — a real
-  curl-based `IOAuthHttpClient`/`IUnifiedApiHttpClient` double drives an actual call against a
-  staging fixture payment, gated behind `UPC_IT_*` environment variables (see `.env.example`) and
-  skipped when unset, since the target environment is VPN-only and can never run in CI.
+  other special case: it retries once via `TokenManager::refreshToken()` (see the `Auth/` bullet
+  above) before throwing, since a cached JWT can be rejected while still inside its cache TTL. The
+  retry is deliberately bounded at one — a 401 on a token minted seconds ago is a
+  credentials/permissions problem that retrying cannot fix — and the non-2xx check runs once, after
+  the possible retry (this retry-then-normalize loop now lives in `AbstractUnifiedApiService`, not
+  on `UnifiedApiPaymentService` itself). Matching unit test in `tests/Services/` (mocked
+  `IUnifiedApiHttpClient`), plus the first genuine `tests/Integration/` test — a real curl-based
+  `IOAuthHttpClient`/`IUnifiedApiHttpClient` double drives an actual call against a staging fixture
+  payment, gated behind `UPC_IT_*` environment variables (see `.env.example`) and skipped when
+  unset, since the target environment is VPN-only and can never run in CI.
+  `UnifiedApiHostedPaymentService` (`final class`, extends `AbstractUnifiedApiService`, PRE-3587) is
+  the create-side sibling: `createHostedPayment(string $hfToken, int $amount, string $currency,
+  string $orderId, ?array $browser = null, ?array $customer = null, ?string $description = null,
+  ?array $paymentMethod = null, ?string $descriptor = null, ?string $notificationUrl = null,
+  ?string $extraData = null): HostedPaymentResult` POSTs `<baseUrl>/payments` via `sendPostJson()`.
+  Only the first 4 parameters were in the ticket's own stated signature; the other 7 were added
+  after cross-checking the Unified API's own OpenAPI schema (the "server-to-server" gitbook page's
+  prose only covers the raw-card variant and doesn't show where `hfToken` goes — a real
+  hosted-fields Postman example from the Unified API team confirmed `hfToken` is a top-level body
+  field, not nested under `paymentMethod`). Only `account` and `amount` are required per the doc;
+  `paymentMethod`, `currency`, `orderId`, `hfToken`, `browser`, `customer`, `description`,
+  `descriptor`, `notificationUrl`, `extraData` are all optional — contradicting the ticket's implied
+  4-required-parameter shape; the doc is treated as the source of truth over the ticket text.
+  `descriptor`/`notificationUrl`/`extraData` were added from a second, separately-supplied summary
+  of the same endpoint's full field list, cross-checked against a much larger candidate set
+  (recurring/subscriptions, Oney installment `commercialCode`, marketplace `submerchantExternalId`,
+  `transferReason`, etc.) that was deliberately **not** added: those are out of this ticket's scope
+  (hosted-fields card payment + 3DS), and adding them now would be speculative surface area for use
+  cases nobody's asked for yet. `metaData` was also excluded, on suspicion it's a summarization
+  artifact/duplicate of `extraData` rather than a genuine distinct field — their described purposes
+  were near-identical in that summary, unlike every other field pair. Body: `{"account": {"id":
+  $accountId}, "amount", "currency", "orderId", "capture": true, "hfToken"}`, plus `"paymentMethod"`
+  (set directly from the `$paymentMethod` argument — its shape mirrors the Unified API's own nesting
+  exactly, e.g. `['details' => ['fullName' => ..., 'selectedBrand' => ...]]`, rather than being
+  reconstructed from a flatter parameter), `"browser"`, `"customer"`, `"description"`, `"descriptor"`,
+  `"notificationUrl"`, `"extraData"` — each added only when its respective parameter is non-null.
+  `paymentMethod` is omitted entirely when `$paymentMethod` is null (not required, and an empty PHP
+  array would `json_encode()` to `[]`, not `{}`). Two unit tests assert on `json_encode()`'s actual
+  output rather than PHP array equality, to catch that mismatch.
+  `browser` and `customer` are each all-or-nothing per the schema (`browser.ip`/`.referrer`/
+  `.userAgent` and `customer.id`/`.email` are required together whenever the parent object is sent
+  at all) — the method does not pre-validate this itself, a malformed partial object surfaces as an
+  `ApiException` from the Unified API's own 400 response, consistent with this library's existing
+  practice of not re-validating what the API itself will reject. `browser` is optional but
+  documented as strongly recommended whenever a real end-user request is available: it's what lets
+  the card network/issuer attempt a frictionless (challenge-free) 3DS flow instead of always forcing
+  one — directly relevant to this ticket's "3DS-pending vs direct success" deliverable, which is
+  precisely why omitting it (as the ticket's literal signature would have) was reconsidered.
+  `paymentMethod.details`' own sub-fields (`fullName`/`selectedBrand`/`validityDate`) are all
+  optional, even though the schema's free-text summary suggested
+  `validityDate` might be required when `details` is sent — a real working hosted-fields Postman
+  example omits `validityDate` entirely, and that concrete example is trusted over the schema
+  summary on this specific point. `capture` is still hardcoded `true`: no capture parameter exists
+  on `createHostedPayment()`, so every call remains an immediate payment, never an
+  authorization-only hold. `$accountId` is a 6th constructor argument (alongside
+  `AbstractUnifiedApiService`'s five) — a plain string, unrelated to the OAuth2 `clientId`, since it
+  identifies the Unified API processing account the payment is created against, not the API
+  consumer. Error handling mirrors `getPayment()` (401-retry, non-2xx throws `ApiException`) minus
+  the 404 special case, since there's no resource being looked up by id on a create call. The
+  response is parsed only enough to distinguish a direct success from a 3DS-pending outcome: a
+  private `extractRedirectUrl()` reads `redirect.url` off the JSON body when present (the Unified
+  API's own signal for pending 3DS/SCA) and returns it as `HostedPaymentResult::$redirectUrl`
+  (`null` on direct success); malformed JSON or a non-string `redirect.url` also yields `null`
+  rather than throwing, since this method extracts one derived field, it does not validate the full
+  payment representation (same "out of scope" reasoning as `getPayment()`). Mapping the eventual
+  outcome to a `PaymentOutcome` constant is explicitly **not** this service's job — that's PRE-3588
+  (parsing the asynchronous webhook/3DS-return confirmation), a distinct concern from this
+  synchronous creation call. Matching unit test in `tests/Services/`, plus an equivalent
+  `tests/Integration/` test — gated behind the same `UPC_IT_*` variables plus `UPC_IT_ACCOUNT_ID`
+  and `UPC_IT_HF_TOKEN`; unlike `UPC_IT_PAYMENT_ID`, `UPC_IT_HF_TOKEN` cannot be a static fixture
+  (an hfToken is single-use and short-lived), so it must be freshly minted via the hosted-fields JS
+  SDK in a browser immediately before each local run.
 
 ## Documentation
 
