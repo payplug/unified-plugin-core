@@ -7,8 +7,8 @@ namespace PayplugUnifiedCore\Auth;
 use PayplugUnifiedCore\Contracts\IOAuthHttpClient;
 use PayplugUnifiedCore\Exceptions\ApiException;
 use PayplugUnifiedCore\Exceptions\InvalidTokenException;
-use PayplugUnifiedCore\Models\AuthorizationRequest;
-use PayplugUnifiedCore\Models\Token;
+use PayplugUnifiedCore\Output\AuthorizationRequestOutput;
+use PayplugUnifiedCore\Output\TokenOutput;
 use PayplugUnifiedCore\Utilities\Helpers\PkceHelper;
 
 /**
@@ -50,7 +50,7 @@ final class OAuth2Client
      * Builds the authorization-code+PKCE redirect URL. Does not redirect itself (no header()
      * call) — the caller performs the actual HTTP redirect.
      */
-    public function buildAuthorizationUrl(string $clientId): AuthorizationRequest
+    public function buildAuthorizationUrl(string $clientId): AuthorizationRequestOutput
     {
         $codeVerifier = PkceHelper::generateCodeVerifier();
         $codeChallenge = PkceHelper::deriveCodeChallenge($codeVerifier);
@@ -67,13 +67,13 @@ final class OAuth2Client
             'code_challenge_method' => 'S256',
         ]);
 
-        return new AuthorizationRequest($this->baseUrl . self::AUTHORIZATION_PATH . '?' . $query, $state, $codeVerifier);
+        return new AuthorizationRequestOutput($this->baseUrl . self::AUTHORIZATION_PATH . '?' . $query, $state, $codeVerifier);
     }
 
     /**
      * @throws ApiException if the exchange fails or the response is malformed
      */
-    public function exchangeAuthorizationCode(string $clientId, string $code, string $codeVerifier): Token
+    public function exchangeAuthorizationCode(string $clientId, string $code, string $codeVerifier): TokenOutput
     {
         return $this->requestToken([
             'grant_type' => 'authorization_code',
@@ -90,7 +90,7 @@ final class OAuth2Client
      *
      * @throws ApiException if the exchange fails or the response is malformed
      */
-    public function getClientCredentialsToken(string $clientId, string $clientSecret): Token
+    public function getClientCredentialsToken(string $clientId, string $clientSecret): TokenOutput
     {
         return $this->requestToken(
             [
@@ -106,7 +106,7 @@ final class OAuth2Client
      * @param array<string, string> $extraHeaders
      * @throws ApiException
      */
-    private function requestToken(array $formParams, array $extraHeaders = []): Token
+    private function requestToken(array $formParams, array $extraHeaders = []): TokenOutput
     {
         $headers = $extraHeaders + ['Content-Type' => 'application/x-www-form-urlencoded'];
         $response = $this->httpClient->post($this->baseUrl . self::TOKEN_PATH, $formParams, $headers);
@@ -130,7 +130,7 @@ final class OAuth2Client
         }
 
         try {
-            return new Token((string) $data['access_token'], (int) $data['expires_in'], (string) $data['token_type']);
+            return new TokenOutput((string) $data['access_token'], (int) $data['expires_in'], (string) $data['token_type']);
         } catch (InvalidTokenException $e) {
             throw new ApiException('OAuth2 token response is malformed.', 0, $e);
         }

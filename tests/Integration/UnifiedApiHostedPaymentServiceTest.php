@@ -9,6 +9,7 @@ use PayplugUnifiedCore\Auth\TokenManager;
 use PayplugUnifiedCore\Services\UnifiedApiHostedPaymentService;
 use PayplugUnifiedCore\Tests\Integration\Support\CurlHttpClient;
 use PayplugUnifiedCore\Tests\Integration\Support\InMemoryTokenCache;
+use PayplugUnifiedCore\Tests\Support\HostedFieldDtoBuilder;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -55,11 +56,16 @@ final class UnifiedApiHostedPaymentServiceTest extends TestCase
             $tokenManager,
             $env['UPC_IT_UNIFIED_API_BASE_URL'],
             $env['UPC_IT_CLIENT_ID'],
-            $env['UPC_IT_CLIENT_SECRET'],
-            $env['UPC_IT_ACCOUNT_ID']
+            $env['UPC_IT_CLIENT_SECRET']
         );
 
-        $result = $service->createHostedPayment($env['UPC_IT_HF_TOKEN'], 1000, 'EUR', 'upc-it-' . time());
+        $dto = HostedFieldDtoBuilder::valid()
+            ->withAccountId($env['UPC_IT_ACCOUNT_ID'])
+            ->withOrderId('upc-it-' . time())
+            ->withHfToken($env['UPC_IT_HF_TOKEN'])
+            ->build();
+
+        $result = $service->createHostedPayment($dto);
 
         self::assertGreaterThanOrEqual(200, $result->status);
         self::assertLessThan(300, $result->status);

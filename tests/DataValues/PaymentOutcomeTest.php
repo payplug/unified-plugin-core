@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace PayplugUnifiedCore\Tests\Models;
+namespace PayplugUnifiedCore\Tests\DataValues;
 
-use PayplugUnifiedCore\Models\PaymentOutcome;
+use PayplugUnifiedCore\DataValues\PaymentOutcome;
 use PHPUnit\Framework\TestCase;
 
 final class PaymentOutcomeTest extends TestCase

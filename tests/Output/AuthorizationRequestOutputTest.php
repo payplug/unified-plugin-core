@@ -2,16 +2,16 @@
 
 declare(strict_types=1);
 
-namespace PayplugUnifiedCore\Tests\Models;
+namespace PayplugUnifiedCore\Tests\Output;
 
-use PayplugUnifiedCore\Models\AuthorizationRequest;
+use PayplugUnifiedCore\Output\AuthorizationRequestOutput;
 use PHPUnit\Framework\TestCase;
 
-final class AuthorizationRequestTest extends TestCase
+final class AuthorizationRequestOutputTest extends TestCase
 {
     public function testConstructorAssignsAllProperties(): void
     {
-        $request = new AuthorizationRequest(
+        $request = new AuthorizationRequestOutput(
             'https://api.payplug.com/oauth2/auth?client_id=abc',
             'random-state',
             'random-code-verifier'

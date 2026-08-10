@@ -11,160 +11,55 @@ use PayplugUnifiedCore\Auth\TokenManager;
 use PayplugUnifiedCore\Contracts\IOAuthHttpClient;
 use PayplugUnifiedCore\Contracts\ITokenCache;
 use PayplugUnifiedCore\Contracts\IUnifiedApiHttpClient;
+use PayplugUnifiedCore\Dto\BrowserDto;
+use PayplugUnifiedCore\Dto\CustomerDto;
 use PayplugUnifiedCore\Exceptions\ApiException;
-use PayplugUnifiedCore\Models\HostedPaymentResult;
+use PayplugUnifiedCore\Exceptions\InvalidHostedFieldException;
+use PayplugUnifiedCore\Output\HostedPaymentOutput;
 use PayplugUnifiedCore\Services\UnifiedApiHostedPaymentService;
+use PayplugUnifiedCore\Tests\Support\HostedFieldDtoBuilder;
 
 final class UnifiedApiHostedPaymentServiceTest extends MockeryTestCase
 {
-    public function testCreateHostedPaymentSendsTheExpectedRequestAndReturnsADirectSuccessResult(): void
+    /**
+     * Body-shape coverage (which optional fields end up in the request, capture's default, the
+     * JSON-encoding edge cases) lives in HostedFieldDtoTest now — the service no longer builds the
+     * body itself, it just forwards $dto->createPayloadBody(). This test proves that delegation:
+     * the mock asserts the exact bytes sent match what the DTO itself produces, not a duplicated
+     * literal array.
+     */
+    public function testCreateHostedPaymentSendsTheDtosPayloadBodyAndReturnsADirectSuccessResult(): void
     {
         $body = json_encode(['id' => 'pay_123']);
+        $dto = HostedFieldDtoBuilder::valid()
+            ->withDescription('Order #456')
+            ->withDescriptor('MY SHOP Order #456')
+            ->withNotificationUrl('https://shop.example.com/payplug/notification')
+            ->withExtraData('internal_ref_789')
+            ->withBrowser(new BrowserDto('10.1.1.1', 'https://shop.example.com/cart', 'Mozilla/5.0'))
+            ->withCustomer(new CustomerDto('john.snow', 'john.snow@example.com'))
+            ->withPaymentMethod(['details' => ['fullName' => 'John Snow', 'selectedBrand' => 'visa']])
+            ->build();
 
         $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
         $httpClient->shouldReceive('postJson')
             ->once()
             ->with(
                 'https://api.payplug.com/payments',
-                Mockery::on(static function (array $requestBody): bool {
-                    return $requestBody === [
-                        'account' => ['id' => 'acc_123'],
-                        'amount' => 1000,
-                        'currency' => 'EUR',
-                        'orderId' => 'order_456',
-                        'capture' => true,
-                        'hfToken' => 'hf_abc',
-                    ];
-                }),
+                $dto->createPayloadBody(),
                 ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
             )
             ->andReturn(['status' => 200, 'body' => $body]);
 
         $service = $this->makeService($httpClient);
 
-        $result = $service->createHostedPayment('hf_abc', 1000, 'EUR', 'order_456');
+        $result = $service->createHostedPayment($dto);
 
         // @phpstan-ignore-next-line staticMethod.alreadyNarrowedType (kept as a regression guard, not removed)
-        self::assertInstanceOf(HostedPaymentResult::class, $result);
+        self::assertInstanceOf(HostedPaymentOutput::class, $result);
         self::assertSame(200, $result->status);
         self::assertSame($body, $result->body);
         self::assertNull($result->redirectUrl);
-    }
-
-    public function testCreateHostedPaymentIncludesBrowserCustomerDescriptionAndPaymentMethodWhenProvided(): void
-    {
-        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
-        $httpClient->shouldReceive('postJson')
-            ->once()
-            ->with(
-                'https://api.payplug.com/payments',
-                Mockery::on(static function (array $requestBody): bool {
-                    return $requestBody === [
-                        'account' => ['id' => 'acc_123'],
-                        'amount' => 1000,
-                        'currency' => 'EUR',
-                        'orderId' => 'order_456',
-                        'capture' => true,
-                        'hfToken' => 'hf_abc',
-                        'paymentMethod' => ['details' => ['fullName' => 'John Snow', 'selectedBrand' => 'visa']],
-                        'browser' => ['ip' => '10.1.1.1', 'referrer' => 'https://shop.example.com/cart', 'userAgent' => 'Mozilla/5.0'],
-                        'customer' => ['id' => 'john.snow', 'email' => 'john.snow@example.com'],
-                        'description' => 'Order #456',
-                        'descriptor' => 'MY SHOP Order #456',
-                        'notificationUrl' => 'https://shop.example.com/payplug/notification',
-                        'extraData' => 'internal_ref_789',
-                    ];
-                }),
-                Mockery::any()
-            )
-            ->andReturn(['status' => 200, 'body' => '{}']);
-
-        $service = $this->makeService($httpClient);
-
-        $service->createHostedPayment(
-            'hf_abc',
-            1000,
-            'EUR',
-            'order_456',
-            ['ip' => '10.1.1.1', 'referrer' => 'https://shop.example.com/cart', 'userAgent' => 'Mozilla/5.0'],
-            ['id' => 'john.snow', 'email' => 'john.snow@example.com'],
-            'Order #456',
-            ['details' => ['fullName' => 'John Snow', 'selectedBrand' => 'visa']],
-            'MY SHOP Order #456',
-            'https://shop.example.com/payplug/notification',
-            'internal_ref_789'
-        );
-    }
-
-    public function testCreateHostedPaymentOmitsAllOptionalFieldsWhenNotProvided(): void
-    {
-        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
-        $httpClient->shouldReceive('postJson')
-            ->once()
-            ->with(
-                Mockery::any(),
-                Mockery::on(static function (array $requestBody): bool {
-                    return !isset($requestBody['paymentMethod'])
-                        && !isset($requestBody['browser'])
-                        && !isset($requestBody['customer'])
-                        && !isset($requestBody['description'])
-                        && !isset($requestBody['descriptor'])
-                        && !isset($requestBody['notificationUrl'])
-                        && !isset($requestBody['extraData']);
-                }),
-                Mockery::any()
-            )
-            ->andReturn(['status' => 200, 'body' => '{}']);
-
-        $service = $this->makeService($httpClient);
-
-        $service->createHostedPayment('hf_abc', 1000, 'EUR', 'order_456');
-    }
-
-    /**
-     * Unlike the other tests, asserts on real json_encode() output, not PHP array equality — that's
-     * what catches a PHP array being structurally right but serializing to the wrong JSON shape.
-     */
-    public function testCreateHostedPaymentsJsonEncodedBodyOmitsPaymentMethodEntirelyWhenDetailsAreNotProvided(): void
-    {
-        $capturedBody = null;
-
-        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
-        $httpClient->shouldReceive('postJson')
-            ->once()
-            ->with(Mockery::any(), Mockery::on(static function (array $body) use (&$capturedBody): bool {
-                $capturedBody = $body;
-
-                return true;
-            }), Mockery::any())
-            ->andReturn(['status' => 200, 'body' => '{}']);
-
-        $service = $this->makeService($httpClient);
-
-        $service->createHostedPayment('hf_abc', 1000, 'EUR', 'order_456');
-
-        self::assertStringNotContainsString('paymentMethod', (string) json_encode($capturedBody));
-    }
-
-    public function testCreateHostedPaymentsJsonEncodedBodySerializesPaymentMethodAsAnObject(): void
-    {
-        $capturedBody = null;
-
-        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
-        $httpClient->shouldReceive('postJson')
-            ->once()
-            ->with(Mockery::any(), Mockery::on(static function (array $body) use (&$capturedBody): bool {
-                $capturedBody = $body;
-
-                return true;
-            }), Mockery::any())
-            ->andReturn(['status' => 200, 'body' => '{}']);
-
-        $service = $this->makeService($httpClient);
-
-        $service->createHostedPayment('hf_abc', 1000, 'EUR', 'order_456', null, null, null, ['details' => ['fullName' => 'John Snow']]);
-
-        self::assertStringContainsString('"paymentMethod":{"details":{"fullName":"John Snow"}}', (string) json_encode($capturedBody));
     }
 
     public function testCreateHostedPaymentExtractsTheRedirectUrlWhenThreeDsIsPending(): void
@@ -176,7 +71,7 @@ final class UnifiedApiHostedPaymentServiceTest extends MockeryTestCase
 
         $service = $this->makeService($httpClient);
 
-        $result = $service->createHostedPayment('hf_abc', 1000, 'EUR', 'order_456');
+        $result = $service->createHostedPayment(HostedFieldDtoBuilder::valid()->build());
 
         self::assertSame('https://3ds.example.com/challenge', $result->redirectUrl);
     }
@@ -188,7 +83,7 @@ final class UnifiedApiHostedPaymentServiceTest extends MockeryTestCase
 
         $service = $this->makeService($httpClient);
 
-        $result = $service->createHostedPayment('hf_abc', 1000, 'EUR', 'order_456');
+        $result = $service->createHostedPayment(HostedFieldDtoBuilder::valid()->build());
 
         self::assertNull($result->redirectUrl);
     }
@@ -202,7 +97,7 @@ final class UnifiedApiHostedPaymentServiceTest extends MockeryTestCase
 
         $service = $this->makeService($httpClient);
 
-        $result = $service->createHostedPayment('hf_abc', 1000, 'EUR', 'order_456');
+        $result = $service->createHostedPayment(HostedFieldDtoBuilder::valid()->build());
 
         self::assertNull($result->redirectUrl);
     }
@@ -217,7 +112,7 @@ final class UnifiedApiHostedPaymentServiceTest extends MockeryTestCase
 
         $service = $this->makeService($httpClient, 'https://api.payplug.com/');
 
-        $service->createHostedPayment('hf_abc', 1000, 'EUR', 'order_456');
+        $service->createHostedPayment(HostedFieldDtoBuilder::valid()->build());
     }
 
     public function testCreateHostedPaymentThrowsApiExceptionOnNonSuccessStatus(): void
@@ -230,7 +125,7 @@ final class UnifiedApiHostedPaymentServiceTest extends MockeryTestCase
         $this->expectException(ApiException::class);
         $this->expectExceptionMessage('Unified API hosted payment request failed with HTTP status 500.');
         $this->expectExceptionCode(500);
-        $service->createHostedPayment('hf_abc', 1000, 'EUR', 'order_456');
+        $service->createHostedPayment(HostedFieldDtoBuilder::valid()->build());
     }
 
     /**
@@ -243,7 +138,7 @@ final class UnifiedApiHostedPaymentServiceTest extends MockeryTestCase
 
         $service = $this->makeService($httpClient);
 
-        self::assertSame($status, $service->createHostedPayment('hf_abc', 1000, 'EUR', 'order_456')->status);
+        self::assertSame($status, $service->createHostedPayment(HostedFieldDtoBuilder::valid()->build())->status);
     }
 
     /**
@@ -269,7 +164,7 @@ final class UnifiedApiHostedPaymentServiceTest extends MockeryTestCase
 
         $this->expectException(ApiException::class);
         $this->expectExceptionCode($status);
-        $service->createHostedPayment('hf_abc', 1000, 'EUR', 'order_456');
+        $service->createHostedPayment(HostedFieldDtoBuilder::valid()->build());
     }
 
     /**
@@ -292,7 +187,7 @@ final class UnifiedApiHostedPaymentServiceTest extends MockeryTestCase
 
         $this->expectException(ApiException::class);
         $this->expectExceptionMessage('Unified API HTTP client response is malformed.');
-        $service->createHostedPayment('hf_abc', 1000, 'EUR', 'order_456');
+        $service->createHostedPayment(HostedFieldDtoBuilder::valid()->build());
     }
 
     public function testCreateHostedPaymentThrowsApiExceptionWhenTheResponseIsMissingItsStatus(): void
@@ -304,7 +199,7 @@ final class UnifiedApiHostedPaymentServiceTest extends MockeryTestCase
 
         $this->expectException(ApiException::class);
         $this->expectExceptionMessage('Unified API HTTP client response is malformed.');
-        $service->createHostedPayment('hf_abc', 1000, 'EUR', 'order_456');
+        $service->createHostedPayment(HostedFieldDtoBuilder::valid()->build());
     }
 
     public function testCreateHostedPaymentRetriesOnceWithAFreshTokenWhenTheCachedOneIsRejected(): void
@@ -323,7 +218,7 @@ final class UnifiedApiHostedPaymentServiceTest extends MockeryTestCase
 
         $service = $this->makeService($httpClient, 'https://api.payplug.com', $this->makeTokenManagerExpectingRefresh());
 
-        $result = $service->createHostedPayment('hf_abc', 1000, 'EUR', 'order_456');
+        $result = $service->createHostedPayment(HostedFieldDtoBuilder::valid()->build());
 
         self::assertSame(200, $result->status);
     }
@@ -345,7 +240,7 @@ final class UnifiedApiHostedPaymentServiceTest extends MockeryTestCase
         $this->expectException(ApiException::class);
         $this->expectExceptionMessage('Unified API hosted payment request failed with HTTP status 401.');
         $this->expectExceptionCode(401);
-        $service->createHostedPayment('hf_abc', 1000, 'EUR', 'order_456');
+        $service->createHostedPayment(HostedFieldDtoBuilder::valid()->build());
     }
 
     public function testCreateHostedPaymentDoesNotRetryOnANonAuthStatus(): void
@@ -360,7 +255,19 @@ final class UnifiedApiHostedPaymentServiceTest extends MockeryTestCase
         $this->expectException(ApiException::class);
         $this->expectExceptionMessage('Unified API hosted payment request failed with HTTP status 403.');
         $this->expectExceptionCode(403);
-        $service->createHostedPayment('hf_abc', 1000, 'EUR', 'order_456');
+        $service->createHostedPayment(HostedFieldDtoBuilder::valid()->build());
+    }
+
+    public function testCreateHostedPaymentThrowsInvalidHostedFieldExceptionBeforeAnyNetworkCall(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldNotReceive('postJson');
+
+        $service = $this->makeService($httpClient, 'https://api.payplug.com', $this->makeTokenManagerExpectingNoInteraction());
+
+        $this->expectException(InvalidHostedFieldException::class);
+        $this->expectExceptionMessage('hfToken must not be empty.');
+        $service->createHostedPayment(HostedFieldDtoBuilder::valid()->withHfToken('')->build());
     }
 
     private function makeService(
@@ -373,8 +280,7 @@ final class UnifiedApiHostedPaymentServiceTest extends MockeryTestCase
             $tokenManager ?? $this->makeTokenManager(),
             $baseUrl,
             'client_abc',
-            'secret_xyz',
-            'acc_123'
+            'secret_xyz'
         );
     }
 
@@ -408,6 +314,24 @@ final class UnifiedApiHostedPaymentServiceTest extends MockeryTestCase
             'status' => 200,
             'body' => json_encode(['access_token' => 'fresh-jwt', 'expires_in' => 300, 'token_type' => 'Bearer']),
         ]);
+
+        $oauth2Client = new OAuth2Client($oauthHttpClient, 'https://idp.example.com', 'https://merchant.example.com/callback', 'payments', 'https://www.payplug.com');
+
+        return new TokenManager($tokenCache, $oauth2Client);
+    }
+
+    /**
+     * Validation is expected to throw before the service ever resolves a token, so this
+     * TokenManager must see zero interaction with either the cache or the identity provider.
+     */
+    private function makeTokenManagerExpectingNoInteraction(): TokenManager
+    {
+        $tokenCache = Mockery::mock(ITokenCache::class);
+        $tokenCache->shouldNotReceive('get');
+        $tokenCache->shouldNotReceive('delete');
+
+        $oauthHttpClient = Mockery::mock(IOAuthHttpClient::class);
+        $oauthHttpClient->shouldNotReceive('post');
 
         $oauth2Client = new OAuth2Client($oauthHttpClient, 'https://idp.example.com', 'https://merchant.example.com/callback', 'payments', 'https://www.payplug.com');
 

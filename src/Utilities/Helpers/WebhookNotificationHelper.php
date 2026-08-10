@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace PayplugUnifiedCore\Utilities\Helpers;
 
+use PayplugUnifiedCore\DataValues\OperationData;
 use PayplugUnifiedCore\Exceptions\InvalidNotificationException;
 use PayplugUnifiedCore\Exceptions\InvalidOperationDataException;
-use PayplugUnifiedCore\Models\OperationData;
 
 /**
  * Parses and validates an asynchronous "Payment Operation" notification (webhook/3DS

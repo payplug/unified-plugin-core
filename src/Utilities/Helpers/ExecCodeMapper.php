@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace PayplugUnifiedCore\Utilities\Helpers;
 
-use PayplugUnifiedCore\Models\PaymentOutcome;
+use PayplugUnifiedCore\DataValues\PaymentOutcome;
 
 /**
  * Maps a Payplug execCode to the coarse PaymentOutcome vocabulary UPC exposes to CMS
