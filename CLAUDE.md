@@ -7,23 +7,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `payplug/unified-plugin-core` is a PHP library providing core foundations shared across Payplug
 e-commerce plugins (e.g. PrestaShop). Beyond the scaffolding — composer manifest, PSR-4 directory
 skeleton, static analysis, code style, git hooks, test harness, CI, and a Dockerized dev
-environment — the library now provides a domain exception hierarchy under `src/Exceptions/`,
-five utility classes under `src/Utilities/Helpers/` (`AmountHelper`, dependency-free; `PhoneHelper`,
+environment — the library now provides: a domain exception hierarchy under `src/Exceptions/`;
+six utility classes under `src/Utilities/Helpers/` (`AmountHelper`, dependency-free; `PhoneHelper`,
 backed by `giggsey/libphonenumber-for-php`, the library's first real runtime dependency — see
 "Constraints to preserve" for what that changed; `PkceHelper`, dependency-free; `ExecCodeMapper`,
-dependency-free, maps a Payplug execCode to a `PaymentOutcome`; and `WebhookNotificationHelper`,
-dependency-free, verifies and parses an asynchronous payment notification), four value
-objects under `src/Models/`: `PaymentOutcome` (payment-result constants), `OperationData`
-(validating persistence value object), `Token` (validating OAuth2 token value object), and
-`AuthorizationRequest` (unvalidated PKCE redirect output), the 8 core interfaces under
-`src/Contracts/` (`ILogger`, `IConfigurationRepository`, `IPaymentRepository`,
-`IOrderStateMutator`, `ILock`, `ITokenCache`, `IOAuthHttpClient`, `IUnifiedApiHttpClient`) that
-define the boundary between UPC and each consuming CMS plugin, `src/Auth/` (`OAuth2Client`,
-`TokenManager`) implementing the OAuth2/PKCE and client-credentials flows against the identity
-provider, and `src/Services/` (`AbstractUnifiedApiService`, `UnifiedApiPaymentService`,
-`UnifiedApiHostedPaymentService`) using that JWT to call the Unified API to fetch a payment
-(PRE-3576) and, as of PRE-3587, to create/confirm one from a hosted-fields token, producing a
-`HostedPaymentResult`.
+dependency-free, maps a Payplug execCode to a `PaymentOutcome`; `WebhookNotificationHelper`,
+dependency-free, verifies and parses an asynchronous payment notification; and `Assert`,
+dependency-free, shared empty/negative/positive field checks reused by `CommonFieldsDtoValidator`/
+`OperationData`/`TokenOutput`); two durable,
+direction-agnostic value types under `src/DataValues/` (`PaymentOutcome`, payment-result constants;
+`OperationData`, the validating persistence value object `IPaymentRepository` will work with);
+three internally-produced value objects under `src/Output/` (`TokenOutput`, validating OAuth2 token
+value object; `AuthorizationRequestOutput`, unvalidated PKCE redirect output; `HostedPaymentOutput`,
+unvalidated hosted-payment-creation output); the 8 core interfaces under `src/Contracts/`
+(`ILogger`, `IConfigurationRepository`, `IPaymentRepository`, `IOrderStateMutator`, `ILock`,
+`ITokenCache`, `IOAuthHttpClient`, `IUnifiedApiHttpClient`) that define the boundary between UPC
+and each consuming CMS plugin; `src/Auth/` (`OAuth2Client`, `TokenManager`) implementing the
+OAuth2/PKCE and client-credentials flows against the identity provider; `src/Services/`
+(`AbstractUnifiedApiService`, `UnifiedApiPaymentService`, `UnifiedApiHostedPaymentService`) using
+that JWT to call the Unified API to fetch a payment (PRE-3576) and, as of PRE-3587, to
+create/confirm one from a hosted-fields token, producing a `HostedPaymentOutput`; and two more
+categories: `src/Dto/` (`HostedFieldDto`, that create-call's caller-built input, composing
+`CommonFieldsDto`/`BrowserDto`/`CustomerDto`) and `src/Validators/` (`HostedFieldDtoValidator` and
+`CommonFieldsDtoValidator`, which check `HostedFieldDto` and `CommonFieldsDto` respectively before
+use).
 
 ## Commands
 
@@ -67,13 +74,20 @@ running Docker daemon. The image builds automatically the first time any target 
 
 - PSR-4 autoload root: `PayplugUnifiedCore\` → `src/`; dev-only autoload root:
   `PayplugUnifiedCore\Tests\` → `tests/`.
-- `src/` is organized into six top-level categories: `Auth/`, `Contracts/`, `Exceptions/`,
-  `Models/`, `Services/`, `Utilities/Helpers/`. New code should land under the matching category
-  rather than introducing new top-level directories.
+- `src/` is organized into top-level categories: `Auth/`, `Contracts/`, `DataValues/`, `Dto/`,
+  `Exceptions/`, `Output/`, `Services/`, `Utilities/Helpers/`, `Validators/`. New code should
+  generally land under an existing matching category — a new top-level category is for when
+  there's a real, growing need for one (as `Dto/`/`Validators/` were split out from
+  `Models/`/`Utilities/Helpers/`, and `Models/` itself later replaced entirely by `DataValues/` and
+  `Output/`, once distinguishing "durable value with its own lifecycle" from "caller-built input"
+  from "internally-produced output" stopped being a distinction worth blurring), not for a single
+  one-off class. `Models/` no longer exists as a category — every class that lived there moved to
+  `DataValues/` or `Output/` (see those bullets below for which, and why).
 - `Exceptions/` holds the domain exception hierarchy: `PayplugException` (base, extends
-  `\Exception` directly) and eight subtypes — `RefundAmountException`, `PaymentNotFoundException`,
+  `\Exception` directly) and ten subtypes — `RefundAmountException`, `PaymentNotFoundException`,
   `InvalidPhoneNumberException`, `CardOperationException`, `ApiException`,
-  `InvalidOperationDataException`, `InvalidTokenException`, `InvalidNotificationException` — each
+  `InvalidOperationDataException`, `InvalidTokenException`, `InvalidNotificationException`,
+  `InvalidHostedFieldException`, `InvalidCommonFieldsException` — each
   a plain marker class extending `PayplugException` directly, with no custom constructor or
   properties, so CMS plugins can catch specific error types instead of a generic exception. Any
   future addition to this hierarchy should follow the same pattern: one class per file, no PHP
@@ -84,39 +98,81 @@ running Docker daemon. The image builds automatically the first time any target 
   `// @phpstan-ignore-next-line staticMethod.alreadyNarrowedType` comment directly above it (see
   any file in `tests/Exceptions/` for the exact pattern) — the assertion is kept as a regression
   guard, not removed.
-- `Models/` holds value objects with no CMS/network I/O of their own. `PaymentOutcome` is a
-  non-instantiable constants container (`final class` + private `@codeCoverageIgnore`d
-  constructor, same pattern as the `Utilities/Helpers/` classes below) holding 6 string constants
-  (`PAID`, `AUTHORIZED`, `CAPTURE_REQUIRED`, `THREE_DS_PENDING`, `REFUNDED`, `FAILED`) — a PHP 7.1
-  stand-in for a PHP 8.1 `enum` — plus `isValid(string $value): bool`. `OperationData` is the
-  persistence value object `IPaymentRepository` (PRE-3467, not yet implemented) will work with:
-  public properties (`operationId`, `execCode`, `outcome`, `amount`, `orderId`, each with a
-  `/** @var */` docblock — PHP 7.1 predates typed properties) set through a validating
-  constructor. Per this library's "never trust external I/O" rule, `OperationData`'s constructor
-  is the validation boundary — it rejects an empty `operationId`/`execCode`/`orderId`, a negative
-  `amount`, or an `outcome` that isn't a `PaymentOutcome` constant, throwing the new
+- `DataValues/` (formerly folded into `Models/`, split into its own category once the vocabulary
+  needed distinguishing from `Dto/`/`Output/` below) holds durable, direction-agnostic value
+  types — not the input to one specific call or the output of another, but data with a life of its
+  own. `PaymentOutcome` is a non-instantiable constants container (`final class` + private
+  `@codeCoverageIgnore`d constructor, same pattern as the `Utilities/Helpers/` classes below)
+  holding 6 string constants (`PAID`, `AUTHORIZED`, `CAPTURE_REQUIRED`, `THREE_DS_PENDING`,
+  `REFUNDED`, `FAILED`) — a PHP 7.1 stand-in for a PHP 8.1 `enum` — plus `isValid(string $value):
+  bool`. `OperationData` is the persistence value object `IPaymentRepository` (PRE-3467, not yet
+  implemented) will work with: public properties (`operationId`, `execCode`, `outcome`, `amount`,
+  `orderId`, each with a `/** @var */` docblock — PHP 7.1 predates typed properties) set through a
+  validating constructor. Per this library's "never trust external I/O" rule, `OperationData`'s
+  constructor is the validation boundary — it rejects an empty `operationId`/`execCode`/`orderId`,
+  a negative `amount`, or an `outcome` that isn't a `PaymentOutcome` constant, throwing the new
   `InvalidOperationDataException` (6th subtype in the `Exceptions/` hierarchy above). `execCode`
   is typed `string`, not `int`: Payplug's execution-codes documentation describes it as a numeric
   string (e.g. `"4001"`, `"6003"`) from an open-ended, growing catalog, so only non-emptiness is
   validated, not a specific digit pattern. `amount` is `int` centimes, matching
-  `AmountHelper::toCents()`'s output convention. Matching tests in `tests/Models/`.
-  `Token` (PRE-3563) is the validating value object for a freshly-minted OAuth2 token response
-  (`accessToken`, `expiresIn`, `tokenType`, each with a `/** @var */` docblock), constructed only
-  from data that has already crossed UPC's external boundary (an OAuth2 token-endpoint
-  response) — its constructor rejects an empty `accessToken`/`tokenType` or a non-positive
-  `expiresIn`, throwing the new `InvalidTokenException` (7th subtype in the `Exceptions/`
-  hierarchy). `AuthorizationRequest` (PRE-3563) is the output of
-  `OAuth2Client::buildAuthorizationUrl()` (`url`, `state`, `codeVerifier`) — unlike every other
-  `Models/` value object, its constructor holds no validation, since it's produced entirely
-  internally by `OAuth2Client` and never crosses an external boundary itself. `HostedPaymentResult`
-  (PRE-3587) is the output of `UnifiedApiHostedPaymentService::createHostedPayment()` (`status`,
-  `body`, `redirectUrl`) — same unvalidated-constructor reasoning as `AuthorizationRequest`, since
+  `AmountHelper::toCents()`'s output convention. **Placement note** (an explicit overlap call, not
+  an oversight): `WebhookNotificationHelper::parse()` produces an `OperationData` from a parsed
+  webhook payload, which reads as `Output/`-shaped — but that's not its whole story. It's also
+  exactly what `IPaymentRepository::save()`/`getByOrderId()`/`getByOperationId()` persist and
+  re-fetch: durable state with a life beyond any single call, not a one-off call result. That's
+  `DataValues/`'s defining trait, so that's where it stays. Matching tests in `tests/DataValues/`.
+- `Output/` holds value objects produced entirely internally by some UPC method rather than built
+  by the caller — the opposite direction from `Dto/` below, which the caller builds. Whether the
+  constructor itself validates varies by class, unlike a hard category rule: `TokenOutput`
+  (PRE-3563, named `Token` before this ticket's `DataValues/`/`Output/` split) is the validating
+  value object for a freshly-minted OAuth2 token response (`accessToken`, `expiresIn`, `tokenType`,
+  each with a `/** @var */` docblock), constructed only from data that has already crossed UPC's
+  external boundary (an OAuth2 token-endpoint response) — its constructor rejects an empty
+  `accessToken`/`tokenType` or a non-positive `expiresIn`, throwing the new `InvalidTokenException`
+  (7th subtype in the `Exceptions/` hierarchy). `AuthorizationRequestOutput` (PRE-3563, named
+  `AuthorizationRequest` before the split) is the output of `OAuth2Client::buildAuthorizationUrl()`
+  (`url`, `state`, `codeVerifier`) — unlike `TokenOutput`, its constructor holds no validation at
+  all, since it's produced entirely internally by `OAuth2Client` and never itself reflects an
+  external response. `HostedPaymentOutput` (PRE-3587, named `HostedPaymentResult` before the split)
+  is the output of `UnifiedApiHostedPaymentService::createHostedPayment()` (`status`, `body`,
+  `redirectUrl`) — same unvalidated-constructor reasoning as `AuthorizationRequestOutput`, since
   it's produced entirely internally from a Unified API response the service has already checked for
   a 2xx status. `redirectUrl` is the one derived field, computed from the response body's
   `redirect.url` (nullable): `null` on a direct success, or the URL to redirect the end-user to for
   3DS/SCA authentication otherwise. It deliberately does not map to a `PaymentOutcome` constant —
   that mapping, for the asynchronous webhook/3DS-return confirmation that comes later, is PRE-3588's
-  job, not this ticket's.
+  job, not this ticket's. Matching tests in `tests/Output/`.
+- `Dto/` is a category of its own — split out from `Models/` once more than one DTO was expected,
+  rather than growing `Models/` indefinitely (see the top-level-categories bullet above). Holds
+  four classes, all assembled by the CMS plugin itself as input to a payment-creation call, with
+  the same unvalidated-constructor reasoning as `AuthorizationRequestOutput`/`HostedPaymentOutput`
+  in `Output/` (validation is a separate step — `HostedFieldDtoValidator`/`CommonFieldsDtoValidator`,
+  see `Validators/` below — rather than folded into construction). `BrowserDto` (`ip`, `referrer`,
+  `userAgent`, all required constructor parameters) and `CustomerDto` (`id`, `email`, both
+  required) hold end-user context reusable by any future payment-method DTO, not just
+  hosted-fields — real Unified API payloads for raw-card and Apple Pay payments both carry the
+  identical `browser`/`customer` shape. Requiring all their fields as constructor parameters
+  (rather than a loose array) is what actually enforces the Unified API schema's "all sub-fields
+  present together or none" rule now: a partial `BrowserDto`/`CustomerDto` can't be constructed, so
+  `HostedFieldDtoValidator` no longer needs to check for that shape at runtime. Both expose
+  `toArray(): array` for `HostedFieldDto::createPayloadBody()` to call. `CommonFieldsDto` holds the
+  payment-creation fields common to every payment method — `accountId`/`amount`/`currency`/
+  `orderId` as required constructor parameters, `description`/`capture` (default `true`)/
+  `descriptor`/`notificationUrl`/`extraData` as public properties set by direct assignment after
+  construction — reusable the same way `BrowserDto`/`CustomerDto` are. `HostedFieldDto` composes
+  all three (`CommonFieldsDto $common`, `?BrowserDto $browser = null`, `?CustomerDto $customer =
+  null`) plus its own two payment-method-specific fields (`hfToken`, `?array $paymentMethod =
+  null`) — a 5-parameter constructor, replacing what had grown to 13 parameters directly on
+  `HostedFieldDto` and tripped SonarCloud's `php:S107` ("too many parameters") check. `paymentMethod`
+  stays a plain array rather than its own DTO: for hosted-fields it's only ever `details`
+  (fullName/selectedBrand/validityDate), and a real `PaymentMethodDto` would need to know what a
+  raw-card flow needs too — a shape that isn't known yet, so it isn't guessed at. `createPayloadBody():
+  array` builds the exact Unified API request body this DTO describes, reading `$this->common->*`
+  directly for the fields `CommonFieldsDto` owns (they land in different shapes in the body —
+  `accountId` nests under `account.id`, the rest are flat) and calling `->toArray()` on
+  `browser`/`customer` when non-null; every field the body needs still lives across these four
+  DTOs, so `UnifiedApiHostedPaymentService` (see `Services/` below) has nothing left to construct
+  itself. Matching tests in `tests/Dto/`.
 - `Contracts/` holds the 8 interfaces that define the boundary between UPC and each consuming CMS
   plugin (first real consumer: UHF/Sylius) — designed around what a CMS needs to provide, not
   around the not-yet-built Unified API's shape, so they survive that later transition intact. All
@@ -226,15 +282,50 @@ running Docker daemon. The image builds automatically the first time any target 
   the "interface exploitable par un contrôleur CMS" this ticket exists to provide; no new
   `Contract` was needed since this logic isn't implemented differently per CMS. Matching test in
   `tests/Utilities/Helpers/`.
+- `Assert` (same `final class` + private-constructor pattern as the helpers above) holds the
+  "field must not be empty" / "must not be negative" / "must be positive" checks that
+  `CommonFieldsDtoValidator`, `OperationData`'s constructor, and `TokenOutput`'s constructor had
+  each independently hand-rolled with only the field name, comparison, and exception class
+  differing — `notEmpty(string $value, string $fieldName, string $exceptionClass): void`,
+  `notNegative(int $value, string $fieldName, string $exceptionClass): void`,
+  `positive(int $value, string $fieldName, string $exceptionClass): void`. `$exceptionClass` is a
+  `class-string<PayplugException>` supplied by the caller (`new $exceptionClass($message)`) rather
+  than Assert throwing one exception type of its own, since each of the three existing call sites
+  needs its own already-established exception type
+  (`InvalidCommonFieldsException`/`InvalidOperationDataException`/`InvalidTokenException`) and
+  none of them could be re-parented onto a shared one without changing every consumer's catch
+  behavior. Matching test in `tests/Utilities/Helpers/`.
+- `Validators/` is a category of its own — split out from `Utilities/Helpers/` once more than one
+  validator was expected, rather than growing that category indefinitely (see the
+  top-level-categories bullet above). Holds two classes (same `final class` + private-constructor
+  pattern as the `Utilities/Helpers/` classes above). `CommonFieldsDtoValidator::validate(
+  CommonFieldsDto $dto): void` checks `accountId`/`orderId`/`currency` non-empty and `amount` not
+  negative, throwing the new `InvalidCommonFieldsException` (10th subtype in the `Exceptions/`
+  hierarchy) on the first problem found — reusable by any future payment-method DTO that composes a
+  `CommonFieldsDto`, not just `HostedFieldDto`. `HostedFieldDtoValidator::validate(HostedFieldDto
+  $dto): void` delegates to it (catching `InvalidCommonFieldsException` and wrapping it into
+  `InvalidHostedFieldException`, so `createHostedPayment()`'s existing `@throws
+  InvalidHostedFieldException` contract for callers doesn't change), then checks `hfToken`
+  non-empty — the one thing still genuinely hosted-fields-specific. The wrap reuses the original
+  message verbatim (e.g. `"accountId must not be empty."`) rather than a generic one, so a caller
+  catching `InvalidHostedFieldException` sees the same level of specificity regardless of which
+  check failed; the original exception is still attached as the previous exception either way. The
+  old `browser`/`customer` "missing a required sub-field" checks are gone entirely: now that
+  `HostedFieldDto::$browser`/`$customer` are typed `BrowserDto`/`CustomerDto` objects rather than
+  loose arrays, a partial one can't be constructed in the first place — the DTO's own constructor
+  enforces the Unified API schema's "all sub-fields present together" rule instead of a runtime
+  check. Matching tests in `tests/Validators/`.
 - `src/Auth/` (PRE-3563) holds the two classes with real OAuth2 logic — everything else this
-  ticket adds (`IOAuthHttpClient`, `PkceHelper`, `Token`, `AuthorizationRequest`) is a contract,
-  helper, or value object slotting into an existing category. `OAuth2Client` (`final class`) is
-  pure token mechanics against the identity provider, with no caching of its own:
-  `buildAuthorizationUrl(string $clientId): AuthorizationRequest` generates the PKCE
-  verifier/challenge/state via `PkceHelper`
+  ticket adds (`IOAuthHttpClient`, `PkceHelper`, `TokenOutput`, `AuthorizationRequestOutput`, both
+  renamed from `Token`/`AuthorizationRequest` when `Models/` was later split into `DataValues/`/
+  `Output/`) is a contract, helper, or value object slotting into an existing category.
+  `OAuth2Client` (`final class`) is pure token mechanics against the identity provider, with no
+  caching of its own: `buildAuthorizationUrl(string $clientId): AuthorizationRequestOutput`
+  generates the PKCE verifier/challenge/state via `PkceHelper`
   and returns the redirect URL without calling `header()` itself (the caller performs the actual
   redirect); `exchangeAuthorizationCode(string $clientId, string $code, string $codeVerifier):
-  Token` and `getClientCredentialsToken(string $clientId, string $clientSecret): Token` both POST
+  TokenOutput` and `getClientCredentialsToken(string $clientId, string $clientSecret):
+  TokenOutput` both POST
   via the injected `IOAuthHttpClient` and throw the existing `ApiException` on a non-2xx response
   or a malformed body. The constructor takes `IOAuthHttpClient $httpClient, string $baseUrl,
   string $redirectUri, string $scope, string $audience` — only the two *resource paths*
@@ -247,8 +338,8 @@ running Docker daemon. The image builds automatically the first time any target 
   `OAuth2Client::getClientCredentialsToken()` and caches the resulting access-token string with a
   TTL shortened by a fixed 60-second renewal margin (`max(1, expiresIn - 60)`) — a request should
   never receive a token that's about to expire mid-flight. `getValidToken()` returns the bare
-  access-token `string`, not the full `Token` object: `ITokenCache` only stores a single string
-  value, so round-tripping `Token`'s other fields through the cache would mean either serializing
+  access-token `string`, not the full `TokenOutput` object: `ITokenCache` only stores a single
+  string value, so round-tripping `TokenOutput`'s other fields through the cache would mean either serializing
   them (leaving a misleading `expiresIn` that reflects the original grant, not remaining time — the
   cache's own shortened TTL is what actually enforces freshness) or not bothering, since
   `tokenType` is always `"Bearer"` for this flow anyway.
@@ -297,16 +388,23 @@ running Docker daemon. The image builds automatically the first time any target 
   `IOAuthHttpClient`/`IUnifiedApiHttpClient` double drives an actual call against a staging fixture
   payment, gated behind `UPC_IT_*` environment variables (see `.env.example`) and skipped when
   unset, since the target environment is VPN-only and can never run in CI.
-  `UnifiedApiHostedPaymentService` (`final class`, extends `AbstractUnifiedApiService`, PRE-3587) is
-  the create-side sibling: `createHostedPayment(string $hfToken, int $amount, string $currency,
-  string $orderId, ?array $browser = null, ?array $customer = null, ?string $description = null,
-  ?array $paymentMethod = null, ?string $descriptor = null, ?string $notificationUrl = null,
-  ?string $extraData = null): HostedPaymentResult` POSTs `<baseUrl>/payments` via `sendPostJson()`.
-  Only the first 4 parameters were in the ticket's own stated signature; the other 7 were added
-  after cross-checking the Unified API's own OpenAPI schema (the "server-to-server" gitbook page's
-  prose only covers the raw-card variant and doesn't show where `hfToken` goes — a real
-  hosted-fields Postman example from the Unified API team confirmed `hfToken` is a top-level body
-  field, not nested under `paymentMethod`). Only `account` and `amount` are required per the doc;
+  `UnifiedApiHostedPaymentService` (`final class`, extends `AbstractUnifiedApiService`, PRE-3587,
+  refactored to take a `HostedFieldDto` instead of 11 positional parameters) is the create-side
+  sibling: `createHostedPayment(HostedFieldDto $dto): HostedPaymentOutput` POSTs `<baseUrl>/payments`
+  via `sendPostJson($url, $dto->createPayloadBody())`, after `HostedFieldDtoValidator::validate($dto)`
+  runs as the method's first line — see `Validators/` above for what it checks and why. The
+  request body itself is built entirely by `HostedFieldDto::createPayloadBody()` (`Dto/`, above),
+  not by the service — every field that body needs lives across `HostedFieldDto` and the
+  `CommonFieldsDto`/`BrowserDto`/`CustomerDto` it composes (see the `Dto/` bullet above for the
+  current shape), so the service has nothing left to construct. `HostedFieldDto` is built by the
+  CMS plugin itself and passed in whole rather than as positional
+  arguments — the original ticket's own stated signature only covered the first 4 (`hfToken`,
+  `amount`, `currency`, `orderId`); the other 7 (`browser`, `customer`, `description`,
+  `paymentMethod`, `descriptor`, `notificationUrl`, `extraData`) were added after
+  cross-checking the Unified API's own OpenAPI schema (the "server-to-server" gitbook page's prose
+  only covers the raw-card variant and doesn't show where `hfToken` goes — a real hosted-fields
+  Postman example from the Unified API team confirmed `hfToken` is a top-level body field, not
+  nested under `paymentMethod`). Only `account` and `amount` are required per the doc;
   `paymentMethod`, `currency`, `orderId`, `hfToken`, `browser`, `customer`, `description`,
   `descriptor`, `notificationUrl`, `extraData` are all optional — contradicting the ticket's implied
   4-required-parameter shape; the doc is treated as the source of truth over the ticket text.
@@ -318,64 +416,81 @@ running Docker daemon. The image builds automatically the first time any target 
   cases nobody's asked for yet. `metaData` was also excluded, on suspicion it's a summarization
   artifact/duplicate of `extraData` rather than a genuine distinct field — their described purposes
   were near-identical in that summary, unlike every other field pair. Body: `{"account": {"id":
-  $accountId}, "amount", "currency", "orderId", "capture": true, "hfToken"}`, plus `"paymentMethod"`
-  (set directly from the `$paymentMethod` argument — its shape mirrors the Unified API's own nesting
-  exactly, e.g. `['details' => ['fullName' => ..., 'selectedBrand' => ...]]`, rather than being
-  reconstructed from a flatter parameter), `"browser"`, `"customer"`, `"description"`, `"descriptor"`,
-  `"notificationUrl"`, `"extraData"` — each added only when its respective parameter is non-null.
-  `paymentMethod` is omitted entirely when `$paymentMethod` is null (not required, and an empty PHP
-  array would `json_encode()` to `[]`, not `{}`). Two unit tests assert on `json_encode()`'s actual
-  output rather than PHP array equality, to catch that mismatch.
+  $dto->common->accountId}, "amount", "currency", "orderId", "capture": $dto->common->capture,
+  "hfToken"}`, plus `"paymentMethod"`
+  (set directly from the DTO's `paymentMethod` property — its shape mirrors the Unified API's own
+  nesting exactly, e.g. `['details' => ['fullName' => ..., 'selectedBrand' => ...]]`, rather than
+  being reconstructed from a flatter parameter), `"browser"`, `"customer"`, `"description"`,
+  `"descriptor"`, `"notificationUrl"`, `"extraData"` — each added only when the corresponding
+  property (on `HostedFieldDto` itself, or on the composed `CommonFieldsDto` for
+  `description`/`descriptor`/`notificationUrl`/`extraData` — see `Dto/` above) is non-null.
+  `paymentMethod` is omitted entirely when that property is null **or an empty array** (not
+  required, and a non-empty-but-still-array PHP value would `json_encode()` to `[]`, not `{}`) —
+  the empty-array case is checked explicitly rather than relying on the null check alone, since a
+  caller passing `[]` instead of `null` is otherwise indistinguishable from one that means to send
+  data. Two unit tests assert on `json_encode()`'s actual output rather than PHP array equality, to
+  catch that mismatch.
   `browser` and `customer` are each all-or-nothing per the schema (`browser.ip`/`.referrer`/
   `.userAgent` and `customer.id`/`.email` are required together whenever the parent object is sent
-  at all) — the method does not pre-validate this itself, a malformed partial object surfaces as an
-  `ApiException` from the Unified API's own 400 response, consistent with this library's existing
-  practice of not re-validating what the API itself will reject. `browser` is optional but
-  documented as strongly recommended whenever a real end-user request is available: it's what lets
-  the card network/issuer attempt a frictionless (challenge-free) 3DS flow instead of always forcing
-  one — directly relevant to this ticket's "3DS-pending vs direct success" deliverable, which is
-  precisely why omitting it (as the ticket's literal signature would have) was reconsidered.
+  at all) — `BrowserDto`/`CustomerDto`'s own required constructor parameters (see `Dto/` above) now
+  enforce exactly that: a partial object simply can't be constructed, closing what used to be just a
+  documented-but-unchecked constraint; a still-malformed body would in any case surface as an
+  `ApiException` from the Unified API's own 400 response. `browser` is optional but documented as
+  strongly recommended whenever a real end-user request is available: it's what lets the card
+  network/issuer attempt a frictionless (challenge-free) 3DS flow instead of always forcing one —
+  directly relevant to this ticket's "3DS-pending vs direct success" deliverable, which is precisely
+  why omitting it (as the ticket's literal signature would have) was reconsidered.
   `paymentMethod.details`' own sub-fields (`fullName`/`selectedBrand`/`validityDate`) are all
-  optional, even though the schema's free-text summary suggested
-  `validityDate` might be required when `details` is sent — a real working hosted-fields Postman
-  example omits `validityDate` entirely, and that concrete example is trusted over the schema
-  summary on this specific point. `capture` is still hardcoded `true`: no capture parameter exists
-  on `createHostedPayment()`, so every call remains an immediate payment, never an
-  authorization-only hold. `$accountId` is a 6th constructor argument (alongside
-  `AbstractUnifiedApiService`'s five) — a plain string, unrelated to the OAuth2 `clientId`, since it
-  identifies the Unified API processing account the payment is created against, not the API
-  consumer. Error handling mirrors `getPayment()` (401-retry, non-2xx throws `ApiException`) minus
-  the 404 special case, since there's no resource being looked up by id on a create call. The
-  response is parsed only enough to distinguish a direct success from a 3DS-pending outcome: a
-  private `extractRedirectUrl()` reads `redirect.url` off the JSON body when present (the Unified
-  API's own signal for pending 3DS/SCA) and returns it as `HostedPaymentResult::$redirectUrl`
-  (`null` on direct success); malformed JSON or a non-string `redirect.url` also yields `null`
-  rather than throwing, since this method extracts one derived field, it does not validate the full
-  payment representation (same "out of scope" reasoning as `getPayment()`). Mapping the eventual
-  outcome to a `PaymentOutcome` constant is explicitly **not** this service's job — that's PRE-3588
-  (parsing the asynchronous webhook/3DS-return confirmation), a distinct concern from this
-  synchronous creation call. Matching unit test in `tests/Services/`, plus an equivalent
-  `tests/Integration/` test — gated behind the same `UPC_IT_*` variables plus `UPC_IT_ACCOUNT_ID`
-  and `UPC_IT_HF_TOKEN`; unlike `UPC_IT_PAYMENT_ID`, `UPC_IT_HF_TOKEN` cannot be a static fixture
-  (an hfToken is single-use and short-lived), so it must be freshly minted via the hosted-fields JS
-  SDK in a browser immediately before each local run.
+  optional, even though the schema's free-text summary suggested `validityDate` might be required
+  when `details` is sent — a real working hosted-fields Postman example omits `validityDate`
+  entirely, and that concrete example is trusted over the schema summary on this specific point;
+  `HostedFieldDtoValidator` does not enforce anything on `paymentMethod`'s shape for that reason.
+  `capture` defaults to `true` (an immediate payment) but can be set to `false` on `CommonFieldsDto`
+  for an authorization-only hold — no validation on it either, since both booleans are always valid.
+  `accountId` lives on `CommonFieldsDto` (composed within `HostedFieldDto`, see `Dto/` above) rather
+  than the service's constructor — unlike `AbstractUnifiedApiService`'s five
+  constructor arguments (shared connection configuration: HTTP client, token manager, base URL,
+  OAuth2 `clientId`/`clientSecret`), it's data about this specific payment request, not configuration
+  shared across every call the service makes, and has no relationship to the OAuth2 `clientId`
+  itself. `UnifiedApiHostedPaymentService` therefore has no constructor of its own, inheriting
+  `AbstractUnifiedApiService`'s five-argument one directly — matching `UnifiedApiPaymentService`.
+  Error handling mirrors `getPayment()` (401-retry, non-2xx throws
+  `ApiException`) minus the 404 special case, since there's no resource being looked up by id on a
+  create call; `InvalidHostedFieldException` (see `Exceptions/` above) is thrown by the validator
+  before any of that — a client-side check, not an API response. The response is parsed only enough
+  to distinguish a direct success from a 3DS-pending outcome: a private `extractRedirectUrl()` reads
+  `redirect.url` off the JSON body when present (the Unified API's own signal for pending 3DS/SCA)
+  and returns it as `HostedPaymentOutput::$redirectUrl` (`null` on direct success); malformed JSON or
+  a non-string `redirect.url` also yields `null` rather than throwing, since this method extracts one
+  derived field, it does not validate the full payment representation (same "out of scope" reasoning
+  as `getPayment()`). Mapping the eventual outcome to a `PaymentOutcome` constant is explicitly
+  **not** this service's job — that's PRE-3588 (parsing the asynchronous webhook/3DS-return
+  confirmation), a distinct concern from this synchronous creation call. Matching unit test in
+  `tests/Services/` (rewritten to build a `HostedFieldDto` and pass it in, plus a case proving an
+  invalid DTO throws before any HTTP call), plus an equivalent `tests/Integration/` test — gated
+  behind the same `UPC_IT_*` variables plus `UPC_IT_ACCOUNT_ID` and `UPC_IT_HF_TOKEN`; unlike
+  `UPC_IT_PAYMENT_ID`, `UPC_IT_HF_TOKEN` cannot be a static fixture (an hfToken is single-use and
+  short-lived), so it must be freshly minted via the hosted-fields JS SDK in a browser immediately
+  before each local run.
 
 ## Documentation
 
-Every top-level `src/` category (`Auth/`, `Contracts/`, `Exceptions/`, `Models/`, `Services/`,
-`Utilities/Helpers/`) is documented in two places, and both must be updated in the same task/PR
-whenever a category gains, loses, or changes a class — not left for a later cleanup pass:
+Every top-level `src/` category (`Auth/`, `Contracts/`, `DataValues/`, `Dto/`, `Exceptions/`,
+`Output/`, `Services/`, `Utilities/Helpers/`, `Validators/`) is documented at implementation-detail
+depth (real method signatures, validation rules, design rationale) in **this file's Architecture
+section above** — one bullet per category — and must be updated in the same task/PR whenever a
+category gains, loses, or changes a class, not left for a later cleanup pass. This applies to
+whoever is doing the work, human or AI assistant.
 
-- **This file's Architecture section above** — one bullet per category, at implementation-detail
-  depth (real method signatures, validation rules, design rationale).
-- **`README.md`** — one section per category (`## Auth`, `## Contracts`, `## Exceptions`,
-  `## Models`, `## Services`, `## Utilities`), at usage depth (what a consumer calls, or — for `Contracts/`,
-  which has no concrete implementations in this library — a one-line purpose per interface).
-
-This applies to whoever is doing the work, human or AI assistant: when a task adds a class to an
-existing category or introduces a new one, its own checklist includes updating both files, the
-way Task 7 of the PRE-3467 plan did for `CLAUDE.md` and a same-day follow-up did for `README.md`.
-Docs drifting out of sync with `src/` is a defect, not a nice-to-have.
+`README.md` is deliberately **not** a technical reference as of the `Dto`/`Validators`/
+`DataValues`/`Output` split — it's a short, marketing-style overview (what this library is, why a
+plugin would use it, a quick-start snippet) that points to the project
+**[wiki](https://github.com/payplug/unified-plugin-core/wiki)** for the full API reference and
+integration guides. The wiki is maintained separately by the team, not synced automatically by
+this file's own rules or by an AI session — don't add per-category `## X` sections back to
+`README.md` to "keep it in sync" with `src/`; that's exactly the technical-reference role the wiki
+now owns. Docs drifting out of sync between `src/` and *this file* is still a defect; `README.md`
+just isn't one of the two sync targets anymore.
 
 ## Constraints to preserve
 

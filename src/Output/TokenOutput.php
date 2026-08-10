@@ -2,16 +2,17 @@
 
 declare(strict_types=1);
 
-namespace PayplugUnifiedCore\Models;
+namespace PayplugUnifiedCore\Output;
 
 use PayplugUnifiedCore\Exceptions\InvalidTokenException;
+use PayplugUnifiedCore\Utilities\Helpers\Assert;
 
 /**
  * Value object for a freshly-minted OAuth2 token response. Construct this only from data that
  * has already crossed UPC's external boundary (an OAuth2 token-endpoint response) — the
  * constructor validates the result, it does not sanitize raw untrusted input itself.
  */
-final class Token
+final class TokenOutput
 {
     /** @var string */
     public $accessToken;
@@ -24,17 +25,9 @@ final class Token
 
     public function __construct(string $accessToken, int $expiresIn, string $tokenType)
     {
-        if ($accessToken === '') {
-            throw new InvalidTokenException('accessToken must not be empty.');
-        }
-
-        if ($expiresIn <= 0) {
-            throw new InvalidTokenException('expiresIn must be greater than zero.');
-        }
-
-        if ($tokenType === '') {
-            throw new InvalidTokenException('tokenType must not be empty.');
-        }
+        Assert::notEmpty($accessToken, 'accessToken', InvalidTokenException::class);
+        Assert::positive($expiresIn, 'expiresIn', InvalidTokenException::class);
+        Assert::notEmpty($tokenType, 'tokenType', InvalidTokenException::class);
 
         $this->accessToken = $accessToken;
         $this->expiresIn = $expiresIn;

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace PayplugUnifiedCore\Models;
+namespace PayplugUnifiedCore\DataValues;
 
 /**
  * Expresses UPC's payment result intent to the CMS, decoupled from any CMS's native

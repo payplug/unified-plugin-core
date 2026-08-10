@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace PayplugUnifiedCore\Tests\Utilities\Helpers;
 
-use PayplugUnifiedCore\Models\PaymentOutcome;
+use PayplugUnifiedCore\DataValues\PaymentOutcome;
 use PayplugUnifiedCore\Utilities\Helpers\ExecCodeMapper;
 use PHPUnit\Framework\TestCase;
 

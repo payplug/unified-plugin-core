@@ -2,17 +2,17 @@
 
 declare(strict_types=1);
 
-namespace PayplugUnifiedCore\Tests\Models;
+namespace PayplugUnifiedCore\Tests\Output;
 
 use PayplugUnifiedCore\Exceptions\InvalidTokenException;
-use PayplugUnifiedCore\Models\Token;
+use PayplugUnifiedCore\Output\TokenOutput;
 use PHPUnit\Framework\TestCase;
 
-final class TokenTest extends TestCase
+final class TokenOutputTest extends TestCase
 {
     public function testConstructorAssignsAllProperties(): void
     {
-        $token = new Token('jwt-access-token', 3600, 'Bearer');
+        $token = new TokenOutput('jwt-access-token', 3600, 'Bearer');
 
         self::assertSame('jwt-access-token', $token->accessToken);
         self::assertSame(3600, $token->expiresIn);
@@ -24,7 +24,7 @@ final class TokenTest extends TestCase
         $this->expectException(InvalidTokenException::class);
         $this->expectExceptionMessage('accessToken must not be empty.');
 
-        new Token('', 3600, 'Bearer');
+        new TokenOutput('', 3600, 'Bearer');
     }
 
     public function testConstructorThrowsWhenExpiresInIsZero(): void
@@ -32,7 +32,7 @@ final class TokenTest extends TestCase
         $this->expectException(InvalidTokenException::class);
         $this->expectExceptionMessage('expiresIn must be greater than zero.');
 
-        new Token('jwt-access-token', 0, 'Bearer');
+        new TokenOutput('jwt-access-token', 0, 'Bearer');
     }
 
     public function testConstructorThrowsWhenExpiresInIsNegative(): void
@@ -40,7 +40,7 @@ final class TokenTest extends TestCase
         $this->expectException(InvalidTokenException::class);
         $this->expectExceptionMessage('expiresIn must be greater than zero.');
 
-        new Token('jwt-access-token', -1, 'Bearer');
+        new TokenOutput('jwt-access-token', -1, 'Bearer');
     }
 
     public function testConstructorThrowsWhenTokenTypeIsEmpty(): void
@@ -48,6 +48,6 @@ final class TokenTest extends TestCase
         $this->expectException(InvalidTokenException::class);
         $this->expectExceptionMessage('tokenType must not be empty.');
 
-        new Token('jwt-access-token', 3600, '');
+        new TokenOutput('jwt-access-token', 3600, '');
     }
 }

@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace PayplugUnifiedCore\Tests\Utilities\Helpers;
 
+use PayplugUnifiedCore\DataValues\PaymentOutcome;
 use PayplugUnifiedCore\Exceptions\InvalidNotificationException;
 use PayplugUnifiedCore\Exceptions\InvalidOperationDataException;
-use PayplugUnifiedCore\Models\PaymentOutcome;
 use PayplugUnifiedCore\Utilities\Helpers\WebhookNotificationHelper;
 use PHPUnit\Framework\TestCase;
 
