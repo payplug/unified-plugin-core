@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace PayplugUnifiedCore\Tests\Models;
+namespace PayplugUnifiedCore\Tests\DataValues;
 
+use PayplugUnifiedCore\DataValues\OperationData;
+use PayplugUnifiedCore\DataValues\PaymentOutcome;
 use PayplugUnifiedCore\Exceptions\InvalidOperationDataException;
-use PayplugUnifiedCore\Models\OperationData;
-use PayplugUnifiedCore\Models\PaymentOutcome;
 use PHPUnit\Framework\TestCase;
 
 final class OperationDataTest extends TestCase

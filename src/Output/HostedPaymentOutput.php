@@ -2,13 +2,13 @@
 
 declare(strict_types=1);
 
-namespace PayplugUnifiedCore\Models;
+namespace PayplugUnifiedCore\Output;
 
 /**
  * Output of UnifiedApiHostedPaymentService::createHostedPayment() — unlike OperationData, its
  * constructor holds no validation, since it's produced entirely internally from a Unified API
  * response the service has already checked for a 2xx status, and never crosses an external
- * boundary itself (same reasoning as AuthorizationRequest).
+ * boundary itself (same reasoning as AuthorizationRequestOutput).
  *
  * redirectUrl distinguishes a direct success from a 3DS-pending outcome: null means the payment
  * was processed synchronously; a non-null URL means the end-user must be redirected there to
@@ -17,7 +17,7 @@ namespace PayplugUnifiedCore\Models;
  * webhook/3DS-return confirmation comes back — this class only carries what's known synchronously,
  * at creation time.
  */
-final class HostedPaymentResult
+final class HostedPaymentOutput
 {
     /** @var int */
     public $status;

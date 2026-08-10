@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace PayplugUnifiedCore\Models;
+namespace PayplugUnifiedCore\Output;
 
 /**
  * Output of OAuth2Client::buildAuthorizationUrl() — the URL to redirect the merchant's browser
@@ -10,7 +10,7 @@ namespace PayplugUnifiedCore\Models;
  * the flow on callback. Unlike OperationData, this never crosses an external boundary — it's
  * produced entirely by UPC's own OAuth2Client — so its constructor holds no validation.
  */
-final class AuthorizationRequest
+final class AuthorizationRequestOutput
 {
     /** @var string */
     public $url;

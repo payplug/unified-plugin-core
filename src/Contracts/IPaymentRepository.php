@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace PayplugUnifiedCore\Contracts;
 
+use PayplugUnifiedCore\DataValues\OperationData;
 use PayplugUnifiedCore\Exceptions\PaymentNotFoundException;
-use PayplugUnifiedCore\Models\OperationData;
 
 /**
  * Persists and retrieves OperationData, and tracks webhook processing state so a webhook
