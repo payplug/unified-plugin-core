@@ -7,17 +7,15 @@ namespace PayplugUnifiedCore\Tests\Support;
 use PayplugUnifiedCore\Dto\BrowserDto;
 use PayplugUnifiedCore\Dto\CommonFieldsDto;
 use PayplugUnifiedCore\Dto\CustomerDto;
-use PayplugUnifiedCore\Dto\HostedFieldDto;
+use PayplugUnifiedCore\Dto\PaymentDto;
 
 /**
- * Fluent test builder for a minimal-but-valid HostedFieldDto, so a test only has to override the
- * one field it's actually exercising instead of repeating all constructor arguments (and
- * CommonFieldsDto's 4) at every call site. Deliberately test-only (not shipped under src/) and
- * deliberately NOT used by HostedFieldDtoTest itself — that file is what proves the
- * HostedFieldDto/CommonFieldsDto constructor contract this builder assumes; routing it through
- * the builder would let a builder bug mask a real constructor regression.
+ * Fluent test builder for a minimal-but-valid PaymentDto, mirroring HostedFieldDtoBuilder's
+ * pattern. Deliberately test-only (not shipped under src/) and deliberately NOT used by
+ * PaymentDtoTest itself, for the same reason HostedFieldDtoBuilder isn't used by
+ * HostedFieldDtoTest — that file proves the real constructor contract this builder assumes.
  */
-final class HostedFieldDtoBuilder
+final class PaymentDtoBuilder
 {
     /** @var string */
     private $accountId = 'acc_123';
@@ -35,10 +33,10 @@ final class HostedFieldDtoBuilder
     private $submerchantExternalId = 'submerchant_789';
 
     /** @var string */
-    private $hfToken = 'hf_abc';
+    private $aliasId = 'alias_789';
 
-    /** @var string|null */
-    private $recurringMode;
+    /** @var string */
+    private $recurringMode = 'ONE_CLICK';
 
     /** @var string|null */
     private $description;
@@ -65,7 +63,7 @@ final class HostedFieldDtoBuilder
     private $customer;
 
     /**
-     * @var array{details?: array{fullName?: string, selectedBrand?: string, validityDate?: string}, saveFutureUsage?: bool}|null
+     * @var array{details?: array{fullName?: string, selectedBrand?: string, validityDate?: string}}|null
      */
     private $paymentMethod;
 
@@ -109,14 +107,14 @@ final class HostedFieldDtoBuilder
         return $this;
     }
 
-    public function withHfToken(string $hfToken): self
+    public function withAliasId(string $aliasId): self
     {
-        $this->hfToken = $hfToken;
+        $this->aliasId = $aliasId;
 
         return $this;
     }
 
-    public function withRecurringMode(?string $recurringMode): self
+    public function withRecurringMode(string $recurringMode): self
     {
         $this->recurringMode = $recurringMode;
 
@@ -180,7 +178,7 @@ final class HostedFieldDtoBuilder
     }
 
     /**
-     * @param array{details?: array{fullName?: string, selectedBrand?: string, validityDate?: string}, saveFutureUsage?: bool}|null $paymentMethod
+     * @param array{details?: array{fullName?: string, selectedBrand?: string, validityDate?: string}}|null $paymentMethod
      */
     public function withPaymentMethod(?array $paymentMethod): self
     {
@@ -189,7 +187,7 @@ final class HostedFieldDtoBuilder
         return $this;
     }
 
-    public function build(): HostedFieldDto
+    public function build(): PaymentDto
     {
         $common = new CommonFieldsDto($this->accountId, $this->amount, $this->currency, $this->orderId, $this->submerchantExternalId);
         $common->description = $this->description;
@@ -199,9 +197,9 @@ final class HostedFieldDtoBuilder
         $common->successUrl = $this->successUrl;
         $common->cancelUrl = $this->cancelUrl;
 
-        return new HostedFieldDto(
+        return new PaymentDto(
             $common,
-            $this->hfToken,
+            $this->aliasId,
             $this->recurringMode,
             $this->browser,
             $this->customer,

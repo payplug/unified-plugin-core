@@ -9,6 +9,7 @@ use PayplugUnifiedCore\Auth\TokenManager;
 use PayplugUnifiedCore\Services\UnifiedApiPaymentService;
 use PayplugUnifiedCore\Tests\Integration\Support\CurlHttpClient;
 use PayplugUnifiedCore\Tests\Integration\Support\InMemoryTokenCache;
+use PayplugUnifiedCore\Tests\Support\HostedFieldDtoBuilder;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -16,6 +17,11 @@ use PHPUnit\Framework\TestCase;
  * environment — requires VPN access, so this suite never runs in CI (phpunit.xml.dist's
  * `integration` testsuite is excluded from the `unit` suite the `quality`/`coverage` CI jobs run).
  * Run locally via `make test-integration` with the env vars below set (see `.env.example`).
+ *
+ * testCreatePaymentCreatesARealPaymentFromAFreshHfToken's UPC_IT_HF_TOKEN needs a *freshly minted*
+ * hosted-fields token before each run: unlike UPC_IT_PAYMENT_ID (a static fixture), an hfToken is
+ * single-use and short-lived — it comes from actually driving the hosted-fields JS SDK in a
+ * browser, which this suite cannot do itself.
  */
 final class UnifiedApiPaymentServiceTest extends TestCase
 {
@@ -61,6 +67,63 @@ final class UnifiedApiPaymentServiceTest extends TestCase
         self::assertIsArray($body);
         self::assertSame($env['UPC_IT_PAYMENT_ID'], $body['id'] ?? null);
         self::assertSame('CAPTURED', $body['operations'][0]['status'] ?? null);
+    }
+
+    public function testCreatePaymentCreatesARealPaymentFromAFreshHfToken(): void
+    {
+        $env = $this->requireEnv([
+            'UPC_IT_OAUTH_BASE_URL',
+            'UPC_IT_OAUTH_SCOPE',
+            'UPC_IT_OAUTH_AUDIENCE',
+            'UPC_IT_CLIENT_ID',
+            'UPC_IT_CLIENT_SECRET',
+            'UPC_IT_UNIFIED_API_BASE_URL',
+            'UPC_IT_ACCOUNT_ID',
+            'UPC_IT_HF_TOKEN',
+        ]);
+
+        if ($env === null) {
+            return;
+        }
+
+        $httpClient = new CurlHttpClient();
+        $oauth2Client = new OAuth2Client(
+            $httpClient,
+            $env['UPC_IT_OAUTH_BASE_URL'],
+            'https://merchant.example.com/callback',
+            $env['UPC_IT_OAUTH_SCOPE'],
+            $env['UPC_IT_OAUTH_AUDIENCE']
+        );
+        $tokenManager = new TokenManager(new InMemoryTokenCache(), $oauth2Client);
+
+        $service = new UnifiedApiPaymentService(
+            $httpClient,
+            $tokenManager,
+            $env['UPC_IT_UNIFIED_API_BASE_URL'],
+            $env['UPC_IT_CLIENT_ID'],
+            $env['UPC_IT_CLIENT_SECRET']
+        );
+
+        $dto = HostedFieldDtoBuilder::valid()
+            ->withAccountId($env['UPC_IT_ACCOUNT_ID'])
+            ->withOrderId('upc-it-' . time())
+            ->withHfToken($env['UPC_IT_HF_TOKEN'])
+            ->build();
+
+        $result = $service->createPayment($dto);
+
+        self::assertGreaterThanOrEqual(200, $result->status);
+        self::assertLessThan(300, $result->status);
+
+        $body = json_decode($result->body, true);
+        self::assertIsArray($body);
+        self::assertArrayHasKey('id', $body);
+
+        // Either outcome is a valid result of a real hosted-fields payment; this only asserts the
+        // response was actually parsed into one of the two known shapes.
+        if ($result->redirectUrl !== null) {
+            self::assertArrayHasKey('redirect', $body);
+        }
     }
 
     /**

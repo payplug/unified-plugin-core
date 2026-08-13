@@ -19,6 +19,7 @@ final class HostedFieldDtoValidatorTest extends TestCase
         HostedFieldDtoValidator::validate(HostedFieldDtoBuilder::valid()
             ->withBrowser(new BrowserDto('10.1.1.1', 'https://shop.example.com/cart', 'Mozilla/5.0'))
             ->withCustomer(new CustomerDto('john.snow', 'john.snow@example.com'))
+            ->withRecurringMode('ONE_CLICK')
             ->build());
 
         $this->expectNotToPerformAssertions();
@@ -38,6 +39,23 @@ final class HostedFieldDtoValidatorTest extends TestCase
         HostedFieldDtoValidator::validate(HostedFieldDtoBuilder::valid()->build());
 
         $this->expectNotToPerformAssertions();
+    }
+
+    public function testValidatePassesWithoutRecurringMode(): void
+    {
+        HostedFieldDtoValidator::validate(HostedFieldDtoBuilder::valid()->withRecurringMode(null)->build());
+
+        $this->expectNotToPerformAssertions();
+    }
+
+    public function testValidateThrowsWhenPaymentMethodSetsIdDirectly(): void
+    {
+        $this->expectException(InvalidHostedFieldException::class);
+        $this->expectExceptionMessage("paymentMethod must not set 'id' directly; use PaymentDto instead.");
+
+        HostedFieldDtoValidator::validate(HostedFieldDtoBuilder::valid()
+            ->withPaymentMethod(['id' => 'alias_789'])
+            ->build());
     }
 
     public function testValidatePassesWhenAmountIsZero(): void
@@ -88,5 +106,55 @@ final class HostedFieldDtoValidatorTest extends TestCase
         $this->expectExceptionMessage('amount must not be negative.');
 
         HostedFieldDtoValidator::validate(HostedFieldDtoBuilder::valid()->withAmount(-1)->build());
+    }
+
+    public function testValidateThrowsWhenSavingFutureUsageWithoutFullName(): void
+    {
+        $this->expectException(InvalidHostedFieldException::class);
+        $this->expectExceptionMessage('paymentMethod.details.fullName must not be empty when paymentMethod.saveFutureUsage is true.');
+
+        HostedFieldDtoValidator::validate(HostedFieldDtoBuilder::valid()
+            ->withRecurringMode('ONE_CLICK')
+            ->withPaymentMethod(['details' => ['selectedBrand' => 'VISA'], 'saveFutureUsage' => true])
+            ->build());
+    }
+
+    public function testValidateThrowsWhenSavingFutureUsageWithAnEmptyFullName(): void
+    {
+        $this->expectException(InvalidHostedFieldException::class);
+        $this->expectExceptionMessage('paymentMethod.details.fullName must not be empty when paymentMethod.saveFutureUsage is true.');
+
+        HostedFieldDtoValidator::validate(HostedFieldDtoBuilder::valid()
+            ->withRecurringMode('ONE_CLICK')
+            ->withPaymentMethod(['details' => ['fullName' => '', 'selectedBrand' => 'VISA'], 'saveFutureUsage' => true])
+            ->build());
+    }
+
+    public function testValidatePassesWhenSavingFutureUsageWithFullNameProvided(): void
+    {
+        HostedFieldDtoValidator::validate(HostedFieldDtoBuilder::valid()
+            ->withRecurringMode('ONE_CLICK')
+            ->withPaymentMethod(['details' => ['fullName' => 'John Doe', 'selectedBrand' => 'VISA'], 'saveFutureUsage' => true])
+            ->build());
+
+        $this->expectNotToPerformAssertions();
+    }
+
+    public function testValidatePassesWithoutFullNameWhenSaveFutureUsageIsFalse(): void
+    {
+        HostedFieldDtoValidator::validate(HostedFieldDtoBuilder::valid()
+            ->withPaymentMethod(['details' => ['selectedBrand' => 'VISA'], 'saveFutureUsage' => false])
+            ->build());
+
+        $this->expectNotToPerformAssertions();
+    }
+
+    public function testValidatePassesWithoutFullNameWhenPaymentMethodDoesNotSetSaveFutureUsage(): void
+    {
+        HostedFieldDtoValidator::validate(HostedFieldDtoBuilder::valid()
+            ->withPaymentMethod(['details' => ['selectedBrand' => 'VISA']])
+            ->build());
+
+        $this->expectNotToPerformAssertions();
     }
 }

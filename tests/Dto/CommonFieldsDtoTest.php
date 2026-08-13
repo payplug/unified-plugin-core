@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace PayplugUnifiedCore\Tests\Dto;
 
+use PayplugUnifiedCore\Dto\BillingDto;
 use PayplugUnifiedCore\Dto\CommonFieldsDto;
+use PayplugUnifiedCore\Dto\ShippingDto;
 use PHPUnit\Framework\TestCase;
 
 final class CommonFieldsDtoTest extends TestCase
@@ -29,22 +31,31 @@ final class CommonFieldsDtoTest extends TestCase
         self::assertNull($common->descriptor);
         self::assertNull($common->notificationUrl);
         self::assertNull($common->extraData);
+        self::assertNull($common->billing);
+        self::assertNull($common->shipping);
     }
 
     public function testOptionalPropertiesAreSettableAfterConstruction(): void
     {
         $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789');
 
+        $billing = new BillingDto();
+        $shipping = new ShippingDto();
+
         $common->description = 'Order #456';
         $common->capture = false;
         $common->descriptor = 'MY SHOP Order #456';
         $common->notificationUrl = 'https://shop.example.com/payplug/notification';
         $common->extraData = 'internal_ref_789';
+        $common->billing = $billing;
+        $common->shipping = $shipping;
 
         self::assertSame('Order #456', $common->description);
         self::assertFalse($common->capture);
         self::assertSame('MY SHOP Order #456', $common->descriptor);
         self::assertSame('https://shop.example.com/payplug/notification', $common->notificationUrl);
         self::assertSame('internal_ref_789', $common->extraData);
+        self::assertSame($billing, $common->billing);
+        self::assertSame($shipping, $common->shipping);
     }
 }
