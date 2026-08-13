@@ -12,9 +12,13 @@ use PayplugUnifiedCore\Exceptions\ApiException;
  * Shared Unified API request mechanics for every Services/ class: resolves a client-credentials
  * JWT via TokenManager, retries exactly once on a 401 with a freshly minted token (a cached JWT can
  * be rejected while still inside its cache TTL), and normalizes IUnifiedApiHttpClient's response
- * shape. Extracted once UnifiedApiPaymentService (PRE-3576) got a sibling
- * (UnifiedApiHostedPaymentService, PRE-3587) rather than duplicating this a third time, per this
- * library's own precedent (see CLAUDE.md's Services/ section).
+ * shape. Extracted at PRE-3587, when createPayment() (originally on its own sibling class,
+ * UnifiedApiHostedPaymentService, later merged back onto UnifiedApiPaymentService at PRE-3590)
+ * first needed the same JWT/retry mechanics as UnifiedApiPaymentService's existing getPayment(),
+ * rather than duplicating this logic a second time, per this library's own precedent (see
+ * CLAUDE.md's Services/ section). Still a separate abstract base — not merged directly into
+ * UnifiedApiPaymentService — so any future Services/ class needing the same mechanics can share it
+ * too.
  */
 abstract class AbstractUnifiedApiService
 {

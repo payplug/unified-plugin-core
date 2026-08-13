@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PayplugUnifiedCore\Tests\Utilities\Helpers;
 
 use PayplugUnifiedCore\Exceptions\InvalidCommonFieldsException;
+use PayplugUnifiedCore\Exceptions\InvalidPaymentException;
 use PayplugUnifiedCore\Exceptions\InvalidTokenException;
 use PayplugUnifiedCore\Utilities\Helpers\Assert;
 use PHPUnit\Framework\TestCase;
@@ -76,5 +77,35 @@ final class AssertTest extends TestCase
         $this->expectExceptionMessage('expiresIn must be greater than zero.');
 
         Assert::positive(-1, 'expiresIn', InvalidTokenException::class);
+    }
+
+    public function testPaymentMethodIdNotSetPassesWhenPaymentMethodIsNull(): void
+    {
+        Assert::paymentMethodIdNotSet(null, 'PaymentDto', InvalidPaymentException::class);
+
+        $this->expectNotToPerformAssertions();
+    }
+
+    public function testPaymentMethodIdNotSetPassesWhenIdKeyIsAbsent(): void
+    {
+        Assert::paymentMethodIdNotSet(['details' => ['selectedBrand' => 'VISA']], 'PaymentDto', InvalidPaymentException::class);
+
+        $this->expectNotToPerformAssertions();
+    }
+
+    public function testPaymentMethodIdNotSetThrowsWhenIdKeyIsSet(): void
+    {
+        $this->expectException(InvalidPaymentException::class);
+        $this->expectExceptionMessage("paymentMethod must not set 'id' directly; use PaymentDto instead.");
+
+        Assert::paymentMethodIdNotSet(['id' => 'alias_789'], 'PaymentDto', InvalidPaymentException::class);
+    }
+
+    public function testPaymentMethodIdNotSetThrowsWhenIdKeyIsExplicitlyNull(): void
+    {
+        $this->expectException(InvalidPaymentException::class);
+        $this->expectExceptionMessage("paymentMethod must not set 'id' directly; use PaymentDto instead.");
+
+        Assert::paymentMethodIdNotSet(['id' => null], 'PaymentDto', InvalidPaymentException::class);
     }
 }

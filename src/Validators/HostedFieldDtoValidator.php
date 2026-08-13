@@ -5,16 +5,26 @@ declare(strict_types=1);
 namespace PayplugUnifiedCore\Validators;
 
 use PayplugUnifiedCore\Dto\HostedFieldDto;
-use PayplugUnifiedCore\Exceptions\InvalidCommonFieldsException;
 use PayplugUnifiedCore\Exceptions\InvalidHostedFieldException;
+use PayplugUnifiedCore\Utilities\Helpers\Assert;
 
 /**
- * Validates a CMS-built HostedFieldDto before UnifiedApiHostedPaymentService::createHostedPayment()
+ * Validates a CMS-built HostedFieldDto before UnifiedApiPaymentService::createPayment()
  * uses it. Delegates the fields common to every payment method to CommonFieldsDtoValidator,
  * wrapping its InvalidCommonFieldsException into InvalidHostedFieldException so callers of
- * createHostedPayment() still only ever need to catch one exception type. The old browser/customer
+ * createPayment() still only ever need to catch one exception type. The old browser/customer
  * "all sub-fields present together" checks are gone — impossible to violate now that both are
  * typed BrowserDto/CustomerDto objects rather than loose arrays.
+ *
+ * hfToken is HostedFieldDto's only mandatory payment-method field (PaymentDto, a sibling DTO, is
+ * the one that pays with an already-created alias instead — hfToken and an alias identifier never
+ * coexist on the same object, by construction, not by a runtime mutual-exclusivity check).
+ *
+ * paymentMethod.details.fullName is otherwise optional (see HostedFieldDto's own docblock — a real
+ * working Postman example omits it entirely for a plain payment), but the Unified API silently
+ * rejects an alias-creation request (paymentMethod.saveFutureUsage: true) missing it — confirmed
+ * against a real staging failure — so it's the one paymentMethod sub-field this validator does
+ * enforce, and only conditionally, once saveFutureUsage is true.
  *
  * <code>
  * try {
@@ -38,14 +48,36 @@ final class HostedFieldDtoValidator
      */
     public static function validate(HostedFieldDto $dto): void
     {
-        try {
-            CommonFieldsDtoValidator::validate($dto->common);
-        } catch (InvalidCommonFieldsException $e) {
-            throw new InvalidHostedFieldException($e->getMessage(), 0, $e);
+        CommonFieldsDtoValidator::validateOrWrap($dto->common, InvalidHostedFieldException::class);
+
+        Assert::notEmpty($dto->hfToken, 'hfToken', InvalidHostedFieldException::class);
+
+        Assert::paymentMethodIdNotSet($dto->paymentMethod, 'PaymentDto', InvalidHostedFieldException::class);
+
+        self::assertFullNameSetWhenSavingFutureUsage($dto->paymentMethod);
+    }
+
+    /**
+     * saveFutureUsage is read via filter_var(..., FILTER_VALIDATE_BOOLEAN) rather than a strict
+     * === true comparison: a CMS plugin building this array from form data may hand back a
+     * truthy-but-non-bool value (e.g. "1" or 1) instead of a real PHP bool, and a strict check
+     * would silently skip the fullName requirement in that case, reproducing the exact silent
+     * alias-creation failure this validator exists to prevent.
+     *
+     * @param array<string, mixed>|null $paymentMethod
+     * @throws InvalidHostedFieldException if saveFutureUsage is true and details.fullName is
+     *                                      missing, non-string, or empty
+     */
+    private static function assertFullNameSetWhenSavingFutureUsage(?array $paymentMethod): void
+    {
+        if ($paymentMethod === null || filter_var($paymentMethod['saveFutureUsage'] ?? false, \FILTER_VALIDATE_BOOLEAN) !== true) {
+            return;
         }
 
-        if ($dto->hfToken === '') {
-            throw new InvalidHostedFieldException('hfToken must not be empty.');
+        $fullName = $paymentMethod['details']['fullName'] ?? null;
+
+        if (!\is_string($fullName) || $fullName === '') {
+            throw new InvalidHostedFieldException('paymentMethod.details.fullName must not be empty when paymentMethod.saveFutureUsage is true.');
         }
     }
 }
