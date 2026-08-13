@@ -61,6 +61,7 @@ final class HostedFieldDto
     {
         $body = [
             'account' => ['id' => $this->common->accountId],
+            'submerchantExternalId' => $this->common->submerchantExternalId,
             'amount' => $this->common->amount,
             'currency' => $this->common->currency,
             'orderId' => $this->common->orderId,

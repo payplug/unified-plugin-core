@@ -40,11 +40,15 @@ final class CommonFieldsDto
     /** @var string|null free-form text echoed back verbatim in that notification */
     public $extraData;
 
-    public function __construct(string $accountId, int $amount, string $currency, string $orderId)
+    /** @var string */
+    public $submerchantExternalId;
+
+    public function __construct(string $accountId, int $amount, string $currency, string $orderId, string $submerchantExternalId)
     {
         $this->accountId = $accountId;
         $this->amount = $amount;
         $this->currency = $currency;
         $this->orderId = $orderId;
+        $this->submerchantExternalId = $submerchantExternalId;
     }
 }

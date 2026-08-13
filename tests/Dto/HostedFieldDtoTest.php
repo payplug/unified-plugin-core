@@ -14,7 +14,7 @@ final class HostedFieldDtoTest extends TestCase
 {
     public function testConstructorAssignsAllPropertiesWhenEveryOptionalFieldIsProvided(): void
     {
-        $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456');
+        $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789');
         $common->description = 'Order #456';
         $common->capture = false;
         $common->descriptor = 'MY SHOP Order #456';
@@ -36,7 +36,7 @@ final class HostedFieldDtoTest extends TestCase
 
     public function testConstructorDefaultsOptionalFieldsToNull(): void
     {
-        $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456'), 'hf_abc');
+        $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789'), 'hf_abc');
 
         self::assertNull($dto->browser);
         self::assertNull($dto->customer);
@@ -45,10 +45,11 @@ final class HostedFieldDtoTest extends TestCase
 
     public function testCreatePayloadBodyIncludesRequiredFieldsAndDefaultsCaptureToTrue(): void
     {
-        $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456'), 'hf_abc');
+        $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789'), 'hf_abc');
 
         self::assertSame([
             'account' => ['id' => 'acc_123'],
+            'submerchantExternalId' => 'submerchant_789',
             'amount' => 1000,
             'currency' => 'EUR',
             'orderId' => 'order_456',
@@ -59,7 +60,7 @@ final class HostedFieldDtoTest extends TestCase
 
     public function testCreatePayloadBodyReflectsCaptureFalse(): void
     {
-        $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456');
+        $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789');
         $common->capture = false;
 
         $dto = new HostedFieldDto($common, 'hf_abc');
@@ -69,7 +70,7 @@ final class HostedFieldDtoTest extends TestCase
 
     public function testCreatePayloadBodyIncludesOptionalFieldsWhenProvided(): void
     {
-        $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456');
+        $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789');
         $common->description = 'Order #456';
         $common->descriptor = 'MY SHOP Order #456';
         $common->notificationUrl = 'https://shop.example.com/payplug/notification';
@@ -85,6 +86,7 @@ final class HostedFieldDtoTest extends TestCase
 
         self::assertSame([
             'account' => ['id' => 'acc_123'],
+            'submerchantExternalId' => 'submerchant_789',
             'amount' => 1000,
             'currency' => 'EUR',
             'orderId' => 'order_456',
@@ -102,14 +104,14 @@ final class HostedFieldDtoTest extends TestCase
 
     public function testCreatePayloadBodyOmitsPaymentMethodWhenItIsAnEmptyArray(): void
     {
-        $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456'), 'hf_abc', null, null, []);
+        $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789'), 'hf_abc', null, null, []);
 
         self::assertArrayNotHasKey('paymentMethod', $dto->createPayloadBody());
     }
 
     public function testCreatePayloadBodyOmitsAllOptionalFieldsWhenNotProvided(): void
     {
-        $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456'), 'hf_abc');
+        $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789'), 'hf_abc');
 
         $body = $dto->createPayloadBody();
 
@@ -129,7 +131,7 @@ final class HostedFieldDtoTest extends TestCase
      */
     public function testCreatePayloadBodyJsonEncodedOutputOmitsPaymentMethodEntirelyWhenNotProvided(): void
     {
-        $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456'), 'hf_abc');
+        $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789'), 'hf_abc');
 
         self::assertStringNotContainsString('paymentMethod', (string) json_encode($dto->createPayloadBody()));
     }
@@ -137,7 +139,7 @@ final class HostedFieldDtoTest extends TestCase
     public function testCreatePayloadBodyJsonEncodedOutputSerializesPaymentMethodAsAnObject(): void
     {
         $dto = new HostedFieldDto(
-            new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456'),
+            new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789'),
             'hf_abc',
             null,
             null,
