@@ -11,17 +11,18 @@ final class CommonFieldsDtoTest extends TestCase
 {
     public function testConstructorAssignsRequiredProperties(): void
     {
-        $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456');
+        $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789');
 
         self::assertSame('acc_123', $common->accountId);
         self::assertSame(1000, $common->amount);
         self::assertSame('EUR', $common->currency);
         self::assertSame('order_456', $common->orderId);
+        self::assertSame('submerchant_789', $common->submerchantExternalId);
     }
 
     public function testConstructorDefaultsOptionalProperties(): void
     {
-        $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456');
+        $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789');
 
         self::assertNull($common->description);
         self::assertTrue($common->capture);
@@ -32,7 +33,7 @@ final class CommonFieldsDtoTest extends TestCase
 
     public function testOptionalPropertiesAreSettableAfterConstruction(): void
     {
-        $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456');
+        $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789');
 
         $common->description = 'Order #456';
         $common->capture = false;

@@ -32,6 +32,9 @@ final class HostedFieldDtoBuilder
     private $orderId = 'order_456';
 
     /** @var string */
+    private $submerchantExternalId = 'submerchant_789';
+
+    /** @var string */
     private $hfToken = 'hf_abc';
 
     /** @var string|null */
@@ -86,6 +89,13 @@ final class HostedFieldDtoBuilder
     public function withOrderId(string $orderId): self
     {
         $this->orderId = $orderId;
+
+        return $this;
+    }
+
+    public function withSubmerchantExternalId(string $submerchantExternalId): self
+    {
+        $this->submerchantExternalId = $submerchantExternalId;
 
         return $this;
     }
@@ -151,7 +161,7 @@ final class HostedFieldDtoBuilder
 
     public function build(): HostedFieldDto
     {
-        $common = new CommonFieldsDto($this->accountId, $this->amount, $this->currency, $this->orderId);
+        $common = new CommonFieldsDto($this->accountId, $this->amount, $this->currency, $this->orderId, $this->submerchantExternalId);
         $common->description = $this->description;
         $common->descriptor = $this->descriptor;
         $common->notificationUrl = $this->notificationUrl;
