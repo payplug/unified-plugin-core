@@ -157,9 +157,12 @@ running Docker daemon. The image builds automatically the first time any target 
   `HostedFieldDtoValidator` no longer needs to check for that shape at runtime. Both expose
   `toArray(): array` for `HostedFieldDto::createPayloadBody()` to call. `CommonFieldsDto` holds the
   payment-creation fields common to every payment method — `accountId`/`amount`/`currency`/
-  `orderId` as required constructor parameters, `description`/`capture` (default `true`)/
-  `descriptor`/`notificationUrl`/`extraData` as public properties set by direct assignment after
-  construction — reusable the same way `BrowserDto`/`CustomerDto` are. `HostedFieldDto` composes
+  `orderId`/`submerchantExternalId` as required constructor parameters (`submerchantExternalId`
+  added by PRE-3587 for marketplace/sub-merchant routing), `description`/`capture` (default
+  `true`)/`descriptor`/`notificationUrl`/`extraData`/`successUrl`/`cancelUrl` as public properties
+  set by direct assignment after construction (`successUrl`/`cancelUrl` added to carry the 3DS/SCA
+  challenge's redirect-return URLs — see the `redirect` object in `createPayloadBody()` below) —
+  reusable the same way `BrowserDto`/`CustomerDto` are. `HostedFieldDto` composes
   all three (`CommonFieldsDto $common`, `?BrowserDto $browser = null`, `?CustomerDto $customer =
   null`) plus its own two payment-method-specific fields (`hfToken`, `?array $paymentMethod =
   null`) — a 5-parameter constructor, replacing what had grown to 13 parameters directly on
@@ -169,7 +172,8 @@ running Docker daemon. The image builds automatically the first time any target 
   raw-card flow needs too — a shape that isn't known yet, so it isn't guessed at. `createPayloadBody():
   array` builds the exact Unified API request body this DTO describes, reading `$this->common->*`
   directly for the fields `CommonFieldsDto` owns (they land in different shapes in the body —
-  `accountId` nests under `account.id`, the rest are flat) and calling `->toArray()` on
+  `accountId` nests under `account.id`, `successUrl`/`cancelUrl` nest under a conditional
+  `redirect` object, the rest are flat) and calling `->toArray()` on
   `browser`/`customer` when non-null; every field the body needs still lives across these four
   DTOs, so `UnifiedApiHostedPaymentService` (see `Services/` below) has nothing left to construct
   itself. Matching tests in `tests/Dto/`.
@@ -410,14 +414,19 @@ running Docker daemon. The image builds automatically the first time any target 
   4-required-parameter shape; the doc is treated as the source of truth over the ticket text.
   `descriptor`/`notificationUrl`/`extraData` were added from a second, separately-supplied summary
   of the same endpoint's full field list, cross-checked against a much larger candidate set
-  (recurring/subscriptions, Oney installment `commercialCode`, marketplace `submerchantExternalId`,
-  `transferReason`, etc.) that was deliberately **not** added: those are out of this ticket's scope
-  (hosted-fields card payment + 3DS), and adding them now would be speculative surface area for use
-  cases nobody's asked for yet. `metaData` was also excluded, on suspicion it's a summarization
-  artifact/duplicate of `extraData` rather than a genuine distinct field — their described purposes
-  were near-identical in that summary, unlike every other field pair. Body: `{"account": {"id":
-  $dto->common->accountId}, "amount", "currency", "orderId", "capture": $dto->common->capture,
-  "hfToken"}`, plus `"paymentMethod"`
+  (recurring/subscriptions, Oney installment `commercialCode`, `transferReason`, etc.) that was
+  deliberately **not** added: those are out of this ticket's scope (hosted-fields card payment +
+  3DS), and adding them now would be speculative surface area for use cases nobody's asked for yet.
+  `metaData` was also excluded, on suspicion it's a summarization artifact/duplicate of `extraData`
+  rather than a genuine distinct field — their described purposes were near-identical in that
+  summary, unlike every other field pair. Two fields from that same candidate set were added later,
+  once an actual consumer needed them: `submerchantExternalId` (PRE-3587, marketplace/sub-merchant
+  routing — a required `CommonFieldsDto` constructor parameter, not optional like the fields below)
+  and `successUrl`/`cancelUrl` (this fix, nested under a `redirect` object — the 3DS/SCA challenge's
+  return-to-merchant URLs; the Unified API payload documents `redirect.successUrl`/
+  `redirect.cancelUrl`, confirmed by the requesting ticket owner, not merely inferred). Body:
+  `{"account": {"id": $dto->common->accountId}, "amount", "currency", "orderId",
+  "submerchantExternalId", "capture": $dto->common->capture, "hfToken"}`, plus `"paymentMethod"`
   (set directly from the DTO's `paymentMethod` property — its shape mirrors the Unified API's own
   nesting exactly, e.g. `['details' => ['fullName' => ..., 'selectedBrand' => ...]]`, rather than
   being reconstructed from a flatter parameter), `"browser"`, `"customer"`, `"description"`,
@@ -429,7 +438,10 @@ running Docker daemon. The image builds automatically the first time any target 
   the empty-array case is checked explicitly rather than relying on the null check alone, since a
   caller passing `[]` instead of `null` is otherwise indistinguishable from one that means to send
   data. Two unit tests assert on `json_encode()`'s actual output rather than PHP array equality, to
-  catch that mismatch.
+  catch that mismatch. `"redirect"` is added only when `successUrl` **or** `cancelUrl` is non-null,
+  and nests only whichever of the two is actually set — a caller providing just one (e.g. only
+  `cancelUrl`, if a merchant-level default already covers the success path) still gets a valid
+  partial `redirect` object rather than either field silently being sent as `null`.
   `browser` and `customer` are each all-or-nothing per the schema (`browser.ip`/`.referrer`/
   `.userAgent` and `customer.id`/`.email` are required together whenever the parent object is sent
   at all) — `BrowserDto`/`CustomerDto`'s own required constructor parameters (see `Dto/` above) now

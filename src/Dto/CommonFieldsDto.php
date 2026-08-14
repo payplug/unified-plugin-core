@@ -40,6 +40,12 @@ final class CommonFieldsDto
     /** @var string|null free-form text echoed back verbatim in that notification */
     public $extraData;
 
+    /** @var string|null the end user is redirected here after successfully completing a 3DS/SCA challenge */
+    public $successUrl;
+
+    /** @var string|null the end user is redirected here if they cancel the 3DS/SCA challenge */
+    public $cancelUrl;
+
     /** @var string */
     public $submerchantExternalId;
 
