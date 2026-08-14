@@ -75,6 +75,8 @@ final class HostedFieldDtoTest extends TestCase
         $common->descriptor = 'MY SHOP Order #456';
         $common->notificationUrl = 'https://shop.example.com/payplug/notification';
         $common->extraData = 'internal_ref_789';
+        $common->successUrl = 'https://shop.example.com/pay/success';
+        $common->cancelUrl = 'https://shop.example.com/pay/cancel';
 
         $dto = new HostedFieldDto(
             $common,
@@ -99,7 +101,38 @@ final class HostedFieldDtoTest extends TestCase
             'descriptor' => 'MY SHOP Order #456',
             'notificationUrl' => 'https://shop.example.com/payplug/notification',
             'extraData' => 'internal_ref_789',
+            'redirect' => [
+                'successUrl' => 'https://shop.example.com/pay/success',
+                'cancelUrl' => 'https://shop.example.com/pay/cancel',
+            ],
         ], $dto->createPayloadBody());
+    }
+
+    public function testCreatePayloadBodyOmitsRedirectWhenNeitherSuccessNorCancelUrlIsProvided(): void
+    {
+        $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789'), 'hf_abc');
+
+        self::assertArrayNotHasKey('redirect', $dto->createPayloadBody());
+    }
+
+    public function testCreatePayloadBodyIncludesRedirectWithOnlySuccessUrlWhenCancelUrlIsNotProvided(): void
+    {
+        $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789');
+        $common->successUrl = 'https://shop.example.com/pay/success';
+
+        $dto = new HostedFieldDto($common, 'hf_abc');
+
+        self::assertSame(['successUrl' => 'https://shop.example.com/pay/success'], $dto->createPayloadBody()['redirect']);
+    }
+
+    public function testCreatePayloadBodyIncludesRedirectWithOnlyCancelUrlWhenSuccessUrlIsNotProvided(): void
+    {
+        $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789');
+        $common->cancelUrl = 'https://shop.example.com/pay/cancel';
+
+        $dto = new HostedFieldDto($common, 'hf_abc');
+
+        self::assertSame(['cancelUrl' => 'https://shop.example.com/pay/cancel'], $dto->createPayloadBody()['redirect']);
     }
 
     public function testCreatePayloadBodyOmitsPaymentMethodWhenItIsAnEmptyArray(): void
@@ -122,6 +155,7 @@ final class HostedFieldDtoTest extends TestCase
         self::assertArrayNotHasKey('descriptor', $body);
         self::assertArrayNotHasKey('notificationUrl', $body);
         self::assertArrayNotHasKey('extraData', $body);
+        self::assertArrayNotHasKey('redirect', $body);
     }
 
     /**

@@ -97,6 +97,17 @@ final class HostedFieldDto
             $body['extraData'] = $this->common->extraData;
         }
 
+        if ($this->common->successUrl !== null || $this->common->cancelUrl !== null) {
+            $redirect = [];
+            if ($this->common->successUrl !== null) {
+                $redirect['successUrl'] = $this->common->successUrl;
+            }
+            if ($this->common->cancelUrl !== null) {
+                $redirect['cancelUrl'] = $this->common->cancelUrl;
+            }
+            $body['redirect'] = $redirect;
+        }
+
         return $body;
     }
 }

@@ -49,6 +49,12 @@ final class HostedFieldDtoBuilder
     /** @var string|null */
     private $extraData;
 
+    /** @var string|null */
+    private $successUrl;
+
+    /** @var string|null */
+    private $cancelUrl;
+
     /** @var BrowserDto|null */
     private $browser;
 
@@ -135,6 +141,20 @@ final class HostedFieldDtoBuilder
         return $this;
     }
 
+    public function withSuccessUrl(?string $successUrl): self
+    {
+        $this->successUrl = $successUrl;
+
+        return $this;
+    }
+
+    public function withCancelUrl(?string $cancelUrl): self
+    {
+        $this->cancelUrl = $cancelUrl;
+
+        return $this;
+    }
+
     public function withBrowser(?BrowserDto $browser): self
     {
         $this->browser = $browser;
@@ -166,6 +186,8 @@ final class HostedFieldDtoBuilder
         $common->descriptor = $this->descriptor;
         $common->notificationUrl = $this->notificationUrl;
         $common->extraData = $this->extraData;
+        $common->successUrl = $this->successUrl;
+        $common->cancelUrl = $this->cancelUrl;
 
         return new HostedFieldDto($common, $this->hfToken, $this->browser, $this->customer, $this->paymentMethod);
     }
