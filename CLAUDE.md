@@ -135,13 +135,20 @@ running Docker daemon. The image builds automatically the first time any target 
   all, since it's produced entirely internally by `OAuth2Client` and never itself reflects an
   external response. `HostedPaymentOutput` (PRE-3587, named `HostedPaymentResult` before the split)
   is the output of `UnifiedApiHostedPaymentService::createHostedPayment()` (`status`, `body`,
-  `redirectUrl`) — same unvalidated-constructor reasoning as `AuthorizationRequestOutput`, since
-  it's produced entirely internally from a Unified API response the service has already checked for
-  a 2xx status. `redirectUrl` is the one derived field, computed from the response body's
-  `redirect.url` (nullable): `null` on a direct success, or the URL to redirect the end-user to for
-  3DS/SCA authentication otherwise. It deliberately does not map to a `PaymentOutcome` constant —
-  that mapping, for the asynchronous webhook/3DS-return confirmation that comes later, is PRE-3588's
-  job, not this ticket's. Matching tests in `tests/Output/`.
+  `redirectUrl`, `redirectHtml`) — same unvalidated-constructor reasoning as
+  `AuthorizationRequestOutput`, since it's produced entirely internally from a Unified API response
+  the service has already checked for a 2xx status. `redirectUrl`/`redirectHtml` are the two
+  derived 3DS-pending fields, both null on a direct success. Per the Unified API's own 3DS doc
+  (advanced-payment-scenarios-and-features/3d-secure-implementation/using-payplugs-3ds-module),
+  a pending challenge is signalled by `execCode=0001` alongside a `redirect` object shaped one of
+  two ways: `redirect.html` (Base64-encoded, "recommended for web" — decoded here into
+  `redirectHtml`, the raw HTML the CMS plugin must inject into its own page; it contains a
+  self-submitting form that sends the end user to the bank's challenge page) or `redirect.url` +
+  `redirect.postParams` (only when the request set `card.threeDSecure.displayMode=raw` — this
+  library only extracts the bare `redirect.url` into `redirectUrl`; `postParams` isn't extracted,
+  since nothing requests raw mode yet). Neither field deliberately maps to a `PaymentOutcome`
+  constant — that mapping, for the asynchronous webhook/3DS-return confirmation that comes later,
+  is PRE-3588's job, not this ticket's. Matching tests in `tests/Output/`.
 - `Dto/` is a category of its own — split out from `Models/` once more than one DTO was expected,
   rather than growing `Models/` indefinitely (see the top-level-categories bullet above). Holds
   four classes, all assembled by the CMS plugin itself as input to a payment-creation call, with
@@ -471,10 +478,16 @@ running Docker daemon. The image builds automatically the first time any target 
   create call; `InvalidHostedFieldException` (see `Exceptions/` above) is thrown by the validator
   before any of that — a client-side check, not an API response. The response is parsed only enough
   to distinguish a direct success from a 3DS-pending outcome: a private `extractRedirectUrl()` reads
-  `redirect.url` off the JSON body when present (the Unified API's own signal for pending 3DS/SCA)
-  and returns it as `HostedPaymentOutput::$redirectUrl` (`null` on direct success); malformed JSON or
-  a non-string `redirect.url` also yields `null` rather than throwing, since this method extracts one
-  derived field, it does not validate the full payment representation (same "out of scope" reasoning
+  `redirect.url` off the JSON body when present (the Unified API's own signal for pending 3DS/SCA,
+  though in practice only reachable via `card.threeDSecure.displayMode=raw` on the request — see
+  `Output/` above) and returns it as `HostedPaymentOutput::$redirectUrl` (`null` on direct success);
+  a sibling private `extractRedirectHtml()` reads `redirect.html` the same way, Base64-decodes it,
+  and returns it as `HostedPaymentOutput::$redirectHtml` — the shape actually returned by default
+  (no `displayMode` override), confirmed against a real staging 3DS-required response
+  (`execCode=0001`) from a consuming plugin's integration test. Malformed JSON, a missing field, a
+  non-string value, or (for the html variant) a value that isn't valid Base64 all yield `null`
+  rather than throwing, since these methods each extract one derived field, they do not validate
+  the full payment representation (same "out of scope" reasoning
   as `getPayment()`). Mapping the eventual outcome to a `PaymentOutcome` constant is explicitly
   **not** this service's job — that's PRE-3588 (parsing the asynchronous webhook/3DS-return
   confirmation), a distinct concern from this synchronous creation call. Matching unit test in
