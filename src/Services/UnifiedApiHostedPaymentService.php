@@ -53,7 +53,12 @@ final class UnifiedApiHostedPaymentService extends AbstractUnifiedApiService
             throw new ApiException(\sprintf('Unified API hosted payment request failed with HTTP status %d.', $response['status']), $response['status']);
         }
 
-        return new HostedPaymentOutput($response['status'], $response['body'], $this->extractRedirectUrl($response['body']));
+        return new HostedPaymentOutput(
+            $response['status'],
+            $response['body'],
+            $this->extractRedirectUrl($response['body']),
+            $this->extractRedirectHtml($response['body'])
+        );
     }
 
     /**
@@ -72,5 +77,29 @@ final class UnifiedApiHostedPaymentService extends AbstractUnifiedApiService
         }
 
         return $data['redirect']['url'];
+    }
+
+    /**
+     * The "recommended for web" 3DS-pending shape, per the same doc: a "redirect" object with an
+     * "html" field holding a Base64-encoded HTML block (a form that auto-submits the end user to
+     * the bank's challenge page) instead of a bare URL — decoded here so the CMS plugin receives
+     * the raw HTML ready to inject into its own page, matching the doc's own "decode this string
+     * on your server" step. A body that isn't valid JSON, has no such field, or holds a string that
+     * isn't valid Base64 all yield null rather than an exception, for the same reason
+     * extractRedirectUrl() does: this only extracts one derived field. An empty string is treated
+     * the same as absent — base64_decode('') returns '' (not false), so without this check an empty
+     * "html" value would come back as "" instead of null.
+     */
+    private function extractRedirectHtml(string $body): ?string
+    {
+        $data = json_decode($body, true);
+
+        if (!\is_array($data) || !isset($data['redirect']['html']) || !\is_string($data['redirect']['html']) || '' === $data['redirect']['html']) {
+            return null;
+        }
+
+        $decoded = base64_decode($data['redirect']['html'], true);
+
+        return false !== $decoded ? $decoded : null;
     }
 }

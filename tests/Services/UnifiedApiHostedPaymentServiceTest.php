@@ -60,6 +60,7 @@ final class UnifiedApiHostedPaymentServiceTest extends MockeryTestCase
         self::assertSame(200, $result->status);
         self::assertSame($body, $result->body);
         self::assertNull($result->redirectUrl);
+        self::assertNull($result->redirectHtml);
     }
 
     public function testCreateHostedPaymentExtractsTheRedirectUrlWhenThreeDsIsPending(): void
@@ -86,6 +87,7 @@ final class UnifiedApiHostedPaymentServiceTest extends MockeryTestCase
         $result = $service->createHostedPayment(HostedFieldDtoBuilder::valid()->build());
 
         self::assertNull($result->redirectUrl);
+        self::assertNull($result->redirectHtml);
     }
 
     public function testCreateHostedPaymentReturnsNullRedirectUrlWhenTheRedirectUrlIsNotAString(): void
@@ -100,6 +102,64 @@ final class UnifiedApiHostedPaymentServiceTest extends MockeryTestCase
         $result = $service->createHostedPayment(HostedFieldDtoBuilder::valid()->build());
 
         self::assertNull($result->redirectUrl);
+    }
+
+    public function testCreateHostedPaymentExtractsAndDecodesTheRedirectHtmlWhenThreeDsIsPending(): void
+    {
+        $html = '<html><body>3DS challenge form</body></html>';
+        $body = json_encode(['id' => 'pay_123', 'execCode' => '0001', 'redirect' => ['html' => base64_encode($html)]]);
+
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 200, 'body' => $body]);
+
+        $service = $this->makeService($httpClient);
+
+        $result = $service->createHostedPayment(HostedFieldDtoBuilder::valid()->build());
+
+        self::assertSame($html, $result->redirectHtml);
+        self::assertNull($result->redirectUrl);
+    }
+
+    public function testCreateHostedPaymentReturnsNullRedirectHtmlWhenTheHtmlIsNotValidBase64(): void
+    {
+        $body = json_encode(['redirect' => ['html' => 'not valid base64!!!']]);
+
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 200, 'body' => $body]);
+
+        $service = $this->makeService($httpClient);
+
+        $result = $service->createHostedPayment(HostedFieldDtoBuilder::valid()->build());
+
+        self::assertNull($result->redirectHtml);
+    }
+
+    public function testCreateHostedPaymentReturnsNullRedirectHtmlWhenTheRedirectHtmlIsNotAString(): void
+    {
+        $body = json_encode(['redirect' => ['html' => 12345]]);
+
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 200, 'body' => $body]);
+
+        $service = $this->makeService($httpClient);
+
+        $result = $service->createHostedPayment(HostedFieldDtoBuilder::valid()->build());
+
+        self::assertNull($result->redirectHtml);
+    }
+
+    public function testCreateHostedPaymentReturnsNullRedirectHtmlWhenTheRedirectHtmlIsAnEmptyString(): void
+    {
+        $body = json_encode(['redirect' => ['html' => '']]);
+
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 200, 'body' => $body]);
+
+        $service = $this->makeService($httpClient);
+
+        $result = $service->createHostedPayment(HostedFieldDtoBuilder::valid()->build());
+
+        self::assertNull($result->redirectHtml);
     }
 
     public function testCreateHostedPaymentNormalizesATrailingSlashOnTheBaseUrl(): void
