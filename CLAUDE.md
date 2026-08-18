@@ -399,6 +399,21 @@ running Docker daemon. The image builds automatically the first time any target 
   `IOAuthHttpClient`/`IUnifiedApiHttpClient` double drives an actual call against a staging fixture
   payment, gated behind `UPC_IT_*` environment variables (see `.env.example`) and skipped when
   unset, since the target environment is VPN-only and can never run in CI.
+  `UnifiedApiOperationService` (`final class`, extends `AbstractUnifiedApiService`) is
+  `UnifiedApiPaymentService`'s sibling for the operation resource rather than a method on it: an
+  operation (one processing event — a payment, a capture, a refund — identified by an id drawn
+  from a payment's own `operationIds` array) is a distinct resource from the payment it belongs
+  to, with its own endpoint and its own not-found case. `getOperation(string $operationId):
+  array{status: int, body: string}` GETs `<baseUrl>/processing-operations/operations/<operationId>`
+  and returns the raw HTTP response, unparsed, for the same reason `getPayment()` does. A 404
+  throws `OperationNotFoundException` — a sibling of `ApiException`, not a subtype, mirroring
+  `PaymentNotFoundException`'s exact precedent — everything else (401-retry, non-2xx handling,
+  malformed-response handling) is inherited from `AbstractUnifiedApiService` unchanged. Notably,
+  an operation's representation carries `transaction.status.execCode` — the same execCode
+  vocabulary `ExecCodeMapper` already maps from the webhook and payment-creation flows — unlike
+  the payment representation itself, which does not surface an execCode at all; a caller polling
+  for a payment's outcome (e.g. a CMS plugin's fallback for a delayed webhook) fetches the
+  operation, not the payment.
   `UnifiedApiHostedPaymentService` (`final class`, extends `AbstractUnifiedApiService`, PRE-3587,
   refactored to take a `HostedFieldDto` instead of 11 positional parameters) is the create-side
   sibling: `createHostedPayment(HostedFieldDto $dto): HostedPaymentOutput` POSTs `<baseUrl>/payments`
