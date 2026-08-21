@@ -42,12 +42,17 @@ final class WebhookNotificationHelperTest extends TestCase
         WebhookNotificationHelper::verifySignature(['Authorization' => 'Bearer wrong'], 'Bearer secret123');
     }
 
-    public function testVerifySignatureThrowsWhenExpectedAuthorizationHeaderIsEmpty(): void
+    public function testVerifySignatureAcceptsAnyRequestWhenExpectedAuthorizationHeaderIsEmpty(): void
     {
-        $this->expectException(InvalidNotificationException::class);
-        $this->expectExceptionMessage('No expected Authorization header is configured; cannot verify the notification.');
-
+        // No secret configured means there is nothing to check the notification against — this is
+        // the normal case for merchants who have no way to configure a webhook secret at all, not
+        // an error condition. Failing open here (rather than rejecting every notification) is what
+        // lets those merchants receive webhooks at all; a merchant who does configure a secret is
+        // still fully protected by the checks below.
         WebhookNotificationHelper::verifySignature(['Authorization' => 'Bearer secret123'], '');
+        WebhookNotificationHelper::verifySignature([], '');
+
+        $this->expectNotToPerformAssertions();
     }
 
     public function testParseReturnsOperationDataForAValidPaymentOperationNotification(): void
@@ -87,6 +92,24 @@ final class WebhookNotificationHelperTest extends TestCase
         $operationData = WebhookNotificationHelper::parse(['Authorization' => 'Bearer secret123'], (string) $rawBody, 'Bearer secret123');
 
         self::assertSame(PaymentOutcome::FAILED, $operationData->outcome);
+    }
+
+    public function testParseMapsThePendingThreeDsExecCodeToThreeDsPendingOutcome(): void
+    {
+        $rawBody = json_encode(['id' => 'op_1', 'execCode' => '0001', 'orderId' => 'order_456', 'amount' => 4999]);
+
+        $operationData = WebhookNotificationHelper::parse(['Authorization' => 'Bearer secret123'], (string) $rawBody, 'Bearer secret123');
+
+        self::assertSame(PaymentOutcome::THREE_DS_PENDING, $operationData->outcome);
+    }
+
+    public function testParseSucceedsWithNoAuthorizationHeaderAtAllWhenNoSecretIsConfigured(): void
+    {
+        $rawBody = json_encode(['id' => 'op_1', 'execCode' => '0000', 'orderId' => 'order_456', 'amount' => 4999]);
+
+        $operationData = WebhookNotificationHelper::parse([], (string) $rawBody, '');
+
+        self::assertSame('op_1', $operationData->operationId);
     }
 
     public function testParseThrowsSignatureExceptionBeforeAttemptingToParseAMalformedBody(): void

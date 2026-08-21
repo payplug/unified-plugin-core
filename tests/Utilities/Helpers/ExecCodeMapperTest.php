@@ -15,6 +15,11 @@ final class ExecCodeMapperTest extends TestCase
         self::assertSame(PaymentOutcome::PAID, ExecCodeMapper::toPaymentOutcome('0000'));
     }
 
+    public function testToPaymentOutcomeMapsPendingThreeDsCodeToThreeDsPending(): void
+    {
+        self::assertSame(PaymentOutcome::THREE_DS_PENDING, ExecCodeMapper::toPaymentOutcome('0001'));
+    }
+
     /**
      * @dataProvider failureExecCodeProvider
      */
