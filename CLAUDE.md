@@ -262,14 +262,27 @@ running Docker daemon. The image builds automatically the first time any target 
   `tests/Utilities/Helpers/`, including a golden-value assertion against RFC 7636 Appendix B's own
   worked example.
 - `ExecCodeMapper` (PRE-3588, same `final class` + private-constructor pattern as the helpers
-  above) maps a Payplug `execCode` to `PaymentOutcome::PAID` (only for `"0000"`) or
-  `PaymentOutcome::FAILED` (everything else) via `toPaymentOutcome(string $execCode): string`.
-  Deliberately minimal: the platform's execCode catalog is a cross-processor internal error
-  taxonomy far more detailed than any merchant-facing outcome needs, and finer-grained outcomes
-  (`AUTHORIZED`/`CAPTURE_REQUIRED`) aren't derivable from `execCode` alone with the webhook fields
-  currently documented. Shared between the synchronous payment-creation flow (PRE-3587) and the
-  asynchronous webhook confirmation flow (`WebhookNotificationHelper`, below), so this mapping
-  decision lives in exactly one place. Matching test in `tests/Utilities/Helpers/`.
+  above) maps a Payplug `execCode` to `PaymentOutcome::PAID` (only for `"0000"`),
+  `PaymentOutcome::THREE_DS_PENDING` (only for `"0001"`, added PRE-3614), or
+  `PaymentOutcome::FAILED` (everything else) via `toPaymentOutcome(string $execCode): string`. Per
+  PayPlug's own execcode catalog, `"0001"` ("Authentification 3DSecure requise") is categorized
+  "Acceptation", not an error — the operation is still awaiting the customer's 3DS challenge, not
+  yet a final outcome. PRE-3614 added this mapping after production was observed (2026-08-21)
+  firing a webhook carrying `"0001"` *before* the real, final notification for the same operation,
+  which under the old two-way mapping got misread as terminal `FAILED` and, via
+  `IPaymentRepository::isTreated()`, permanently blocked the correct final notification from ever
+  applying (see `WebhookNotificationHelper` below for the consuming side of that fix). Two sibling
+  non-terminal "Acceptation" codes are deliberately left unmapped, since neither has ever been
+  observed in a real notification — `"0002"` (`WAITING_PROVIDER`) and `"0003"` (`WAITING_STATUS`)
+  would each need the exact same treatment as `"0001"` if ever observed. `"0004"`
+  (`PARTIALLY_ACCEPTED_TRANSACTION`, a marketplace/split-payment outcome) is excluded too, as out
+  of scope for any flow this mapper currently serves. Deliberately minimal otherwise: the
+  platform's execCode catalog is a cross-processor internal error taxonomy far more detailed than
+  any merchant-facing outcome needs, and finer-grained outcomes (`AUTHORIZED`/`CAPTURE_REQUIRED`)
+  aren't derivable from `execCode` alone with the webhook fields currently documented. Shared
+  between the synchronous payment-creation flow (PRE-3587) and the asynchronous webhook
+  confirmation flow (`WebhookNotificationHelper`, below), so this mapping decision lives in exactly
+  one place. Matching test in `tests/Utilities/Helpers/`.
 - `WebhookNotificationHelper` (PRE-3588, same pattern) parses and validates an asynchronous
   "Payment Operation" notification (webhook/3DS confirmation), independently of the CMS that
   receives the HTTP request. `verifySignature(array $headers, string $expectedAuthorizationHeader): void`
@@ -277,22 +290,36 @@ running Docker daemon. The image builds automatically the first time any target 
   (`hash_equals()`) comparison against `$expectedAuthorizationHeader` — the platform's webhook
   receiver has no HMAC/signature-over-body scheme, only a shared secret configured at
   webhook-creation time and echoed back in that header (Basic or Bearer, merchant's choice); it
-  throws `InvalidNotificationException` if the header is absent or doesn't match.
+  throws `InvalidNotificationException` if a secret **is** configured and the header is absent or
+  doesn't match it. When `$expectedAuthorizationHeader` is empty, `verifySignature()` instead
+  accepts the notification unverified rather than throwing (PRE-3614) — no merchant/account
+  currently has any way to configure a webhook secret at all, so the original throw-on-empty
+  behavior rejected every notification unconditionally, and no webhook could ever be processed.
+  **This is a deliberate, known, temporary tradeoff, not a resolved design**: it fails open on
+  signature verification for every merchant today, pending a product decision (PM/engineering
+  manager sign-off, both on leave as of PRE-3614) on how — or whether — webhook secret
+  configuration will be exposed at all. Revisit this once that decision lands; don't treat the
+  empty-header branch as settled behavior.
   `parse(array $headers, string $rawBody, string $expectedAuthorizationHeader): OperationData`
   calls `verifySignature()`, decodes `$rawBody` as JSON, validates presence of `id`/`execCode`/
   `orderId`/`amount`, maps the outcome via `ExecCodeMapper`, and returns `new OperationData(...)`
   — reusing the existing value object rather than introducing a new one, since its shape matches
   exactly. `InvalidOperationDataException` from that constructor is wrapped into
   `InvalidNotificationException` (same pattern as `OAuth2Client::requestToken()` wrapping
-  `InvalidTokenException` into `ApiException`). `parse()` never itself returns
-  `PaymentOutcome::THREE_DS_PENDING`: the platform's execCode documentation states the transient
-  in-flight codes are never emitted as an asynchronous notification, so a fired webhook always
-  carries a final code. A CMS controller resolves a previously `THREE_DS_PENDING` `OperationData`
-  (set by PRE-3587's synchronous flow) to its final state by calling `parse()` on the webhook and
-  persisting the `OperationData` it returns via `IPaymentRepository`/`IOrderStateMutator` — this is
-  the "interface exploitable par un contrôleur CMS" this ticket exists to provide; no new
-  `Contract` was needed since this logic isn't implemented differently per CMS. Matching test in
-  `tests/Utilities/Helpers/`.
+  `InvalidTokenException` into `ApiException`). `parse()` **can** return an `OperationData` with
+  outcome `PaymentOutcome::THREE_DS_PENDING` (PRE-3614) — contrary to this class's original
+  assumption that a fired asynchronous notification always carries a final code, PayPlug's notifier
+  was observed live in production (2026-08-21) firing a notification carrying execCode `"0001"`
+  before the real, final one for the same operation. A caller must treat a `THREE_DS_PENDING`
+  result as "no new information yet" and must not let it consume any idempotency/dedupe tracking
+  (`IPaymentRepository::isTreated()`/`markTreated()`) meant for the operation's eventual final
+  notification, or the later, final one will be permanently blocked from ever applying — exactly
+  the production incident PRE-3614 fixes. A CMS controller resolves a previously
+  `THREE_DS_PENDING` `OperationData` (set by PRE-3587's synchronous flow, or by this same situation
+  recurring) to its final state by calling `parse()` again on a later webhook and persisting the
+  `OperationData` it returns via `IPaymentRepository`/`IOrderStateMutator` — this is the "interface
+  exploitable par un contrôleur CMS" PRE-3588 exists to provide; no new `Contract` was needed since
+  this logic isn't implemented differently per CMS. Matching test in `tests/Utilities/Helpers/`.
 - `Assert` (same `final class` + private-constructor pattern as the helpers above) holds the
   "field must not be empty" / "must not be negative" / "must be positive" checks that
   `CommonFieldsDtoValidator`, `OperationData`'s constructor, and `TokenOutput`'s constructor had
@@ -399,6 +426,20 @@ running Docker daemon. The image builds automatically the first time any target 
   `IOAuthHttpClient`/`IUnifiedApiHttpClient` double drives an actual call against a staging fixture
   payment, gated behind `UPC_IT_*` environment variables (see `.env.example`) and skipped when
   unset, since the target environment is VPN-only and can never run in CI.
+  `UnifiedApiPaymentService` also exposes `getOperation(string $operationId): array{status: int,
+  body: string}` (PRE-3614) — GETs the **public** operation endpoint,
+  `<baseUrl>/processing-operations/operations/public/<operationId>`, as opposed to the internal
+  `/processing-operations/operations/<operationId>` resource `UnifiedApiOperationService` targets
+  below (which a merchant's own client credentials cannot reach — confirmed by a 403 in staging).
+  Its response is a flat, webhook-shaped payload (`id`/`execCode`/`orderId`/`amount` at the top
+  level) — the same shape `WebhookNotificationHelper::parse()` already knows how to turn into an
+  `OperationData`, which is what makes it useful as a polling fallback for a delayed or lost
+  webhook (e.g. to resolve a stuck `THREE_DS_PENDING` `OperationData` without waiting on another
+  webhook). Unlike `getPayment()`, a 404 here throws the generic `ApiException` rather than a
+  dedicated not-found exception type: a caller polling this as a webhook fallback treats every
+  failure the same way, so a dedicated type would add a distinction nothing currently uses.
+  Everything else (401-retry, non-2xx handling) is inherited from `AbstractUnifiedApiService`
+  unchanged. Matching unit test in `tests/Services/`.
   `UnifiedApiOperationService` (`final class`, extends `AbstractUnifiedApiService`) is
   `UnifiedApiPaymentService`'s sibling for the operation resource rather than a method on it: an
   operation (one processing event — a payment, a capture, a refund — identified by an id drawn
@@ -413,7 +454,13 @@ running Docker daemon. The image builds automatically the first time any target 
   vocabulary `ExecCodeMapper` already maps from the webhook and payment-creation flows — unlike
   the payment representation itself, which does not surface an execCode at all; a caller polling
   for a payment's outcome (e.g. a CMS plugin's fallback for a delayed webhook) fetches the
-  operation, not the payment.
+  operation, not the payment. **Caveat (PRE-3614):** this private-endpoint path returns HTTP 403
+  for a merchant's own client credentials in staging, i.e. it does not currently work for the only
+  credential type this library uses — `UnifiedApiPaymentService::getOperation()` above, against the
+  public endpoint, is the path actually confirmed working end-to-end. Whether
+  `UnifiedApiOperationService`/`OperationNotFoundException` should be removed as dead code, or kept
+  for a future case where the private endpoint becomes reachable, is an open decision left for a
+  follow-up ticket — treat this class as unverified/likely non-functional until then.
   `UnifiedApiHostedPaymentService` (`final class`, extends `AbstractUnifiedApiService`, PRE-3587,
   refactored to take a `HostedFieldDto` instead of 11 positional parameters) is the create-side
   sibling: `createHostedPayment(HostedFieldDto $dto): HostedPaymentOutput` POSTs `<baseUrl>/payments`

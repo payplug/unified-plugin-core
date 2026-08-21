@@ -238,6 +238,84 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
         $service->getPayment('pay_123');
     }
 
+    public function testGetOperationReturnsStatusAndBodyOnSuccess(): void
+    {
+        $body = json_encode(['id' => 'op_123', 'execCode' => '0000', 'orderId' => '000000072', 'amount' => 7400]);
+
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('get')
+            ->once()
+            ->with('https://api.payplug.com/processing-operations/operations/public/op_123', ['Authorization' => 'Bearer cached-jwt'])
+            ->andReturn(['status' => 200, 'body' => $body]);
+
+        $service = new UnifiedApiPaymentService($httpClient, $this->makeTokenManager(), 'https://api.payplug.com', 'client_abc', 'secret_xyz');
+
+        self::assertSame(['status' => 200, 'body' => $body], $service->getOperation('op_123'));
+    }
+
+    public function testGetOperationUrlEncodesTheOperationId(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('get')
+            ->once()
+            ->with('https://api.payplug.com/processing-operations/operations/public/op%2F123%20456', ['Authorization' => 'Bearer cached-jwt'])
+            ->andReturn(['status' => 200, 'body' => '{}']);
+
+        $service = new UnifiedApiPaymentService($httpClient, $this->makeTokenManager(), 'https://api.payplug.com', 'client_abc', 'secret_xyz');
+
+        self::assertSame(['status' => 200, 'body' => '{}'], $service->getOperation('op/123 456'));
+    }
+
+    /**
+     * Unlike getPayment(), a 404 here is just another failure — no dedicated exception type, since
+     * no caller currently needs to distinguish "unknown operation id" from any other API error.
+     */
+    public function testGetOperationThrowsApiExceptionOnA404(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('get')->once()->andReturn(['status' => 404, 'body' => '{"error":"not_found"}']);
+
+        $service = new UnifiedApiPaymentService($httpClient, $this->makeTokenManager(), 'https://api.payplug.com', 'client_abc', 'secret_xyz');
+
+        $this->expectException(ApiException::class);
+        $this->expectExceptionMessage('Unified API operation request failed with HTTP status 404.');
+        $this->expectExceptionCode(404);
+        $service->getOperation('op_123');
+    }
+
+    public function testGetOperationThrowsApiExceptionOnNonSuccessStatus(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('get')->once()->andReturn(['status' => 500, 'body' => '{"error":"boom"}']);
+
+        $service = new UnifiedApiPaymentService($httpClient, $this->makeTokenManager(), 'https://api.payplug.com', 'client_abc', 'secret_xyz');
+
+        $this->expectException(ApiException::class);
+        $this->expectExceptionMessage('Unified API operation request failed with HTTP status 500.');
+        $this->expectExceptionCode(500);
+        $service->getOperation('op_123');
+    }
+
+    public function testGetOperationRetriesOnceWithAFreshTokenWhenTheCachedOneIsRejected(): void
+    {
+        $body = json_encode(['id' => 'op_123', 'execCode' => '0000', 'orderId' => '000000072', 'amount' => 7400]);
+        $url = 'https://api.payplug.com/processing-operations/operations/public/op_123';
+
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('get')
+            ->once()
+            ->with($url, ['Authorization' => 'Bearer stale-jwt'])
+            ->andReturn(['status' => 401, 'body' => '{"error":"invalid_token"}']);
+        $httpClient->shouldReceive('get')
+            ->once()
+            ->with($url, ['Authorization' => 'Bearer fresh-jwt'])
+            ->andReturn(['status' => 200, 'body' => $body]);
+
+        $service = new UnifiedApiPaymentService($httpClient, $this->makeTokenManagerExpectingRefresh(), 'https://api.payplug.com', 'client_abc', 'secret_xyz');
+
+        self::assertSame(['status' => 200, 'body' => $body], $service->getOperation('op_123'));
+    }
+
     private function makeTokenManager(): TokenManager
     {
         $tokenCache = Mockery::mock(ITokenCache::class);
