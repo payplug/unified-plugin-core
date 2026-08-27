@@ -4,10 +4,14 @@ declare(strict_types=1);
 
 namespace PayplugUnifiedCore\Tests\Dto;
 
+use PayplugUnifiedCore\Dto\AddressDto;
+use PayplugUnifiedCore\Dto\BillingDto;
 use PayplugUnifiedCore\Dto\BrowserDto;
 use PayplugUnifiedCore\Dto\CommonFieldsDto;
+use PayplugUnifiedCore\Dto\ContactDto;
 use PayplugUnifiedCore\Dto\CustomerDto;
 use PayplugUnifiedCore\Dto\HostedFieldDto;
+use PayplugUnifiedCore\Dto\ShippingDto;
 use PHPUnit\Framework\TestCase;
 
 final class HostedFieldDtoTest extends TestCase
@@ -25,10 +29,11 @@ final class HostedFieldDtoTest extends TestCase
         $customer = new CustomerDto('john.snow', 'john.snow@example.com');
         $paymentMethod = ['details' => ['fullName' => 'John Snow', 'selectedBrand' => 'visa']];
 
-        $dto = new HostedFieldDto($common, 'hf_abc', $browser, $customer, $paymentMethod);
+        $dto = new HostedFieldDto($common, 'hf_abc', 'ONE_CLICK', $browser, $customer, $paymentMethod);
 
         self::assertSame($common, $dto->common);
         self::assertSame('hf_abc', $dto->hfToken);
+        self::assertSame('ONE_CLICK', $dto->recurringMode);
         self::assertSame($browser, $dto->browser);
         self::assertSame($customer, $dto->customer);
         self::assertSame($paymentMethod, $dto->paymentMethod);
@@ -38,6 +43,7 @@ final class HostedFieldDtoTest extends TestCase
     {
         $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789'), 'hf_abc');
 
+        self::assertNull($dto->recurringMode);
         self::assertNull($dto->browser);
         self::assertNull($dto->customer);
         self::assertNull($dto->paymentMethod);
@@ -53,6 +59,7 @@ final class HostedFieldDtoTest extends TestCase
             'amount' => 1000,
             'currency' => 'EUR',
             'orderId' => 'order_456',
+            'description' => null,
             'capture' => true,
             'hfToken' => 'hf_abc',
         ], $dto->createPayloadBody());
@@ -75,12 +82,15 @@ final class HostedFieldDtoTest extends TestCase
         $common->descriptor = 'MY SHOP Order #456';
         $common->notificationUrl = 'https://shop.example.com/payplug/notification';
         $common->extraData = 'internal_ref_789';
+        $common->billing = new BillingDto(new AddressDto('1 rue de Rivoli', 'Paris', 'FR', 'IDF', '75001'), new ContactDto('John', 'Snow'));
+        $common->shipping = new ShippingDto(new AddressDto('2 rue de Rivoli', 'Paris', 'FR', 'IDF', '75001'), new ContactDto('John', 'Snow'));
         $common->successUrl = 'https://shop.example.com/pay/success';
         $common->cancelUrl = 'https://shop.example.com/pay/cancel';
 
         $dto = new HostedFieldDto(
             $common,
             'hf_abc',
+            'ONE_CLICK',
             new BrowserDto('10.1.1.1', 'https://shop.example.com/cart', 'Mozilla/5.0'),
             new CustomerDto('john.snow', 'john.snow@example.com'),
             ['details' => ['fullName' => 'John Snow', 'selectedBrand' => 'visa']]
@@ -92,20 +102,49 @@ final class HostedFieldDtoTest extends TestCase
             'amount' => 1000,
             'currency' => 'EUR',
             'orderId' => 'order_456',
+            'description' => 'Order #456',
             'capture' => true,
             'hfToken' => 'hf_abc',
             'paymentMethod' => ['details' => ['fullName' => 'John Snow', 'selectedBrand' => 'visa']],
+            'recurringMode' => 'ONE_CLICK',
             'browser' => ['ip' => '10.1.1.1', 'referrer' => 'https://shop.example.com/cart', 'userAgent' => 'Mozilla/5.0'],
             'customer' => ['id' => 'john.snow', 'email' => 'john.snow@example.com'],
-            'description' => 'Order #456',
             'descriptor' => 'MY SHOP Order #456',
             'notificationUrl' => 'https://shop.example.com/payplug/notification',
             'extraData' => 'internal_ref_789',
+            'billing' => ['address' => ['line' => '1 rue de Rivoli', 'city' => 'Paris', 'country' => 'FR', 'state' => 'IDF', 'zipCode' => '75001'], 'firstName' => 'John', 'lastName' => 'Snow'],
+            'shipping' => ['address' => ['line' => '2 rue de Rivoli', 'city' => 'Paris', 'country' => 'FR', 'state' => 'IDF', 'zipCode' => '75001'], 'firstName' => 'John', 'lastName' => 'Snow'],
             'redirect' => [
                 'successUrl' => 'https://shop.example.com/pay/success',
                 'cancelUrl' => 'https://shop.example.com/pay/cancel',
             ],
         ], $dto->createPayloadBody());
+    }
+
+    public function testCreatePayloadBodyIncludesBillingAloneWhenOnlyBillingIsProvided(): void
+    {
+        $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789');
+        $common->billing = new BillingDto(new AddressDto('1 rue de Rivoli', 'Paris', 'FR'));
+
+        $dto = new HostedFieldDto($common, 'hf_abc');
+
+        $body = $dto->createPayloadBody();
+
+        self::assertSame(['address' => ['line' => '1 rue de Rivoli', 'city' => 'Paris', 'country' => 'FR']], $body['billing']);
+        self::assertArrayNotHasKey('shipping', $body);
+    }
+
+    public function testCreatePayloadBodyIncludesShippingAloneWhenOnlyShippingIsProvided(): void
+    {
+        $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789');
+        $common->shipping = new ShippingDto(new AddressDto('2 rue de Rivoli', 'Paris', 'FR'));
+
+        $dto = new HostedFieldDto($common, 'hf_abc');
+
+        $body = $dto->createPayloadBody();
+
+        self::assertSame(['address' => ['line' => '2 rue de Rivoli', 'city' => 'Paris', 'country' => 'FR']], $body['shipping']);
+        self::assertArrayNotHasKey('billing', $body);
     }
 
     public function testCreatePayloadBodyOmitsRedirectWhenNeitherSuccessNorCancelUrlIsProvided(): void
@@ -137,7 +176,7 @@ final class HostedFieldDtoTest extends TestCase
 
     public function testCreatePayloadBodyOmitsPaymentMethodWhenItIsAnEmptyArray(): void
     {
-        $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789'), 'hf_abc', null, null, []);
+        $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789'), 'hf_abc', null, null, null, []);
 
         self::assertArrayNotHasKey('paymentMethod', $dto->createPayloadBody());
     }
@@ -149,13 +188,25 @@ final class HostedFieldDtoTest extends TestCase
         $body = $dto->createPayloadBody();
 
         self::assertArrayNotHasKey('paymentMethod', $body);
+        self::assertArrayNotHasKey('recurringMode', $body);
         self::assertArrayNotHasKey('browser', $body);
         self::assertArrayNotHasKey('customer', $body);
-        self::assertArrayNotHasKey('description', $body);
         self::assertArrayNotHasKey('descriptor', $body);
         self::assertArrayNotHasKey('notificationUrl', $body);
         self::assertArrayNotHasKey('extraData', $body);
+        self::assertArrayNotHasKey('billing', $body);
+        self::assertArrayNotHasKey('shipping', $body);
         self::assertArrayNotHasKey('redirect', $body);
+    }
+
+    public function testCreatePayloadBodyAlwaysIncludesTheDescriptionKeyEvenWhenNull(): void
+    {
+        $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789'), 'hf_abc');
+
+        $body = $dto->createPayloadBody();
+
+        self::assertArrayHasKey('description', $body);
+        self::assertNull($body['description']);
     }
 
     /**
@@ -175,6 +226,7 @@ final class HostedFieldDtoTest extends TestCase
         $dto = new HostedFieldDto(
             new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789'),
             'hf_abc',
+            null,
             null,
             null,
             ['details' => ['fullName' => 'John Snow']]

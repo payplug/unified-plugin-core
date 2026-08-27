@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace PayplugUnifiedCore\Dto;
 
+use PayplugUnifiedCore\Contracts\PaymentRequestPayload;
+use PayplugUnifiedCore\Traits\BuildsCommonPayloadBody;
+
 /**
- * Input to UnifiedApiHostedPaymentService::createHostedPayment(), built by the CMS plugin itself.
+ * Input to UnifiedApiPaymentService::createPayment(), built by the CMS plugin itself.
  * Unlike OperationData/TokenOutput, this constructor holds no validation — HostedFieldDtoValidator
  * is a separate collaborator the service calls explicitly before using this DTO, rather than
  * validation being folded into construction.
@@ -13,17 +16,33 @@ namespace PayplugUnifiedCore\Dto;
  * Composes CommonFieldsDto/BrowserDto/CustomerDto (all Dto/, above) rather than repeating their
  * fields — those three are shared by any future payment-method DTO, not hosted-fields-specific.
  *
+ * hfToken is mandatory: a hosted-fields payment cannot exist without one, and it never coexists
+ * with an alias identifier on this object — paying with an already-created alias instead (no card
+ * data at all) is PaymentDto's job, a separate DTO, not a nullable/mutually-exclusive pair of
+ * fields on this one. recurringMode is the one field this DTO keeps for the alias-adjacent case:
+ * set it alongside paymentMethod.saveFutureUsage=true to create an alias from this hosted-fields
+ * payment for future reuse; omit it otherwise.
+ *
  * createPayloadBody() builds the exact Unified API request body this DTO describes.
  *
  * @see \PayplugUnifiedCore\Validators\HostedFieldDtoValidator
  */
-final class HostedFieldDto
+final class HostedFieldDto implements PaymentRequestPayload
 {
+    use BuildsCommonPayloadBody;
+
     /** @var CommonFieldsDto */
     public $common;
 
     /** @var string */
     public $hfToken;
+
+    /**
+     * @var string|null 'ONE_CLICK' or 'SUBSCRIPTION' — only meaningful (and only sent) alongside
+     *      paymentMethod.saveFutureUsage=true, to create an alias from this payment; omit
+     *      otherwise.
+     */
+    public $recurringMode;
 
     /** @var BrowserDto|null */
     public $browser;
@@ -32,23 +51,26 @@ final class HostedFieldDto
     public $customer;
 
     /**
-     * @var array{details?: array{fullName?: string, selectedBrand?: string, validityDate?: string}}|null
-     *      supplementary card metadata, nested exactly as the Unified API expects it.
+     * @var array{details?: array{fullName?: string, selectedBrand?: string, validityDate?: string}, saveFutureUsage?: bool}|null
+     *      supplementary card metadata, nested exactly as the Unified API expects it. Must not set
+     *      'id' directly — that key belongs to PaymentDto's alias-payment flow, not this one.
      */
     public $paymentMethod;
 
     /**
-     * @param array{details?: array{fullName?: string, selectedBrand?: string, validityDate?: string}}|null $paymentMethod
+     * @param array{details?: array{fullName?: string, selectedBrand?: string, validityDate?: string}, saveFutureUsage?: bool}|null $paymentMethod
      */
     public function __construct(
         CommonFieldsDto $common,
         string $hfToken,
+        ?string $recurringMode = null,
         ?BrowserDto $browser = null,
         ?CustomerDto $customer = null,
         ?array $paymentMethod = null
     ) {
         $this->common = $common;
         $this->hfToken = $hfToken;
+        $this->recurringMode = $recurringMode;
         $this->browser = $browser;
         $this->customer = $customer;
         $this->paymentMethod = $paymentMethod;
@@ -59,55 +81,16 @@ final class HostedFieldDto
      */
     public function createPayloadBody(): array
     {
-        $body = [
-            'account' => ['id' => $this->common->accountId],
-            'submerchantExternalId' => $this->common->submerchantExternalId,
-            'amount' => $this->common->amount,
-            'currency' => $this->common->currency,
-            'orderId' => $this->common->orderId,
-            'capture' => $this->common->capture,
-            'hfToken' => $this->hfToken,
-        ];
+        $paymentMethodSpecificFields = ['hfToken' => $this->hfToken];
 
         if ($this->paymentMethod !== null && $this->paymentMethod !== []) {
-            $body['paymentMethod'] = $this->paymentMethod;
+            $paymentMethodSpecificFields['paymentMethod'] = $this->paymentMethod;
         }
 
-        if ($this->browser !== null) {
-            $body['browser'] = $this->browser->toArray();
+        if ($this->recurringMode !== null) {
+            $paymentMethodSpecificFields['recurringMode'] = $this->recurringMode;
         }
 
-        if ($this->customer !== null) {
-            $body['customer'] = $this->customer->toArray();
-        }
-
-        if ($this->common->description !== null) {
-            $body['description'] = $this->common->description;
-        }
-
-        if ($this->common->descriptor !== null) {
-            $body['descriptor'] = $this->common->descriptor;
-        }
-
-        if ($this->common->notificationUrl !== null) {
-            $body['notificationUrl'] = $this->common->notificationUrl;
-        }
-
-        if ($this->common->extraData !== null) {
-            $body['extraData'] = $this->common->extraData;
-        }
-
-        if ($this->common->successUrl !== null || $this->common->cancelUrl !== null) {
-            $redirect = [];
-            if ($this->common->successUrl !== null) {
-                $redirect['successUrl'] = $this->common->successUrl;
-            }
-            if ($this->common->cancelUrl !== null) {
-                $redirect['cancelUrl'] = $this->common->cancelUrl;
-            }
-            $body['redirect'] = $redirect;
-        }
-
-        return $body;
+        return $this->buildPayloadBody($paymentMethodSpecificFields);
     }
 }

@@ -18,19 +18,35 @@ dependency-free, shared empty/negative/positive field checks reused by `CommonFi
 direction-agnostic value types under `src/DataValues/` (`PaymentOutcome`, payment-result constants;
 `OperationData`, the validating persistence value object `IPaymentRepository` will work with);
 three internally-produced value objects under `src/Output/` (`TokenOutput`, validating OAuth2 token
-value object; `AuthorizationRequestOutput`, unvalidated PKCE redirect output; `HostedPaymentOutput`,
-unvalidated hosted-payment-creation output); the 8 core interfaces under `src/Contracts/`
+value object; `AuthorizationRequestOutput`, unvalidated PKCE redirect output; `PaymentOutput`,
+unvalidated payment-creation output, also carrying the alias identifier created or reused by
+that call); the 8 core interfaces under `src/Contracts/`
 (`ILogger`, `IConfigurationRepository`, `IPaymentRepository`, `IOrderStateMutator`, `ILock`,
 `ITokenCache`, `IOAuthHttpClient`, `IUnifiedApiHttpClient`) that define the boundary between UPC
-and each consuming CMS plugin; `src/Auth/` (`OAuth2Client`, `TokenManager`) implementing the
+and each consuming CMS plugin, plus `PaymentRequestPayload` (moved here from `Dto/`, see that
+bullet below for why it's still a plain descriptive name rather than following the `I`-prefix
+convention the other 8 use); `src/Auth/` (`OAuth2Client`, `TokenManager`) implementing the
 OAuth2/PKCE and client-credentials flows against the identity provider; `src/Services/`
-(`AbstractUnifiedApiService`, `UnifiedApiPaymentService`, `UnifiedApiHostedPaymentService`) using
+(`AbstractUnifiedApiService`, `UnifiedApiPaymentService`) using
 that JWT to call the Unified API to fetch a payment (PRE-3576) and, as of PRE-3587, to
-create/confirm one from a hosted-fields token, producing a `HostedPaymentOutput`; and two more
-categories: `src/Dto/` (`HostedFieldDto`, that create-call's caller-built input, composing
-`CommonFieldsDto`/`BrowserDto`/`CustomerDto`) and `src/Validators/` (`HostedFieldDtoValidator` and
-`CommonFieldsDtoValidator`, which check `HostedFieldDto` and `CommonFieldsDto` respectively before
-use).
+create/confirm one from a hosted-fields token, producing a `PaymentOutput` — as of PRE-3590,
+that same call also creates or pays with a card alias, via either of two caller-built input DTOs
+(`HostedFieldDto` or `PaymentDto`) sharing one `PaymentRequestPayload` interface — and, as of
+PRE-3590's follow-up rework, the payment-creation method `createPayment()` (renamed from its
+original name) lives directly on `UnifiedApiPaymentService` itself rather than on a separate
+sibling service, which no longer exists; and two more
+categories: `src/Dto/` (`HostedFieldDto`, `hfToken`-driven hosted-fields payment, optionally also
+creating an alias via `recurringMode`; `PaymentDto`, paying with an already-created alias instead,
+no `hfToken` at all; `BillingDto`/
+`ShippingDto`, the payment's optional `billing`/`shipping` blocks, each composing an `AddressDto`
+for their shared nested `address` sub-object and a `ContactDto` for their shared name/phone
+fields, wired in via `CommonFieldsDto::$billing`/`$shipping`);
+`src/Traits/` (`BuildsCommonPayloadBody`, shared by `HostedFieldDto`/`PaymentDto`;
+`OmitsNullPropertiesFromArray`, shared by `AddressDto`/`ContactDto`/`ShippingScheduleDto`)
+and
+`src/Validators/`
+(`HostedFieldDtoValidator`, `PaymentDtoValidator`, and `CommonFieldsDtoValidator`, which check
+`HostedFieldDto`, `PaymentDto`, and `CommonFieldsDto` respectively before use).
 
 ## Commands
 
@@ -75,7 +91,7 @@ running Docker daemon. The image builds automatically the first time any target 
 - PSR-4 autoload root: `PayplugUnifiedCore\` → `src/`; dev-only autoload root:
   `PayplugUnifiedCore\Tests\` → `tests/`.
 - `src/` is organized into top-level categories: `Auth/`, `Contracts/`, `DataValues/`, `Dto/`,
-  `Exceptions/`, `Output/`, `Services/`, `Utilities/Helpers/`, `Validators/`. New code should
+  `Exceptions/`, `Output/`, `Services/`, `Traits/`, `Utilities/Helpers/`, `Validators/`. New code should
   generally land under an existing matching category — a new top-level category is for when
   there's a real, growing need for one (as `Dto/`/`Validators/` were split out from
   `Models/`/`Utilities/Helpers/`, and `Models/` itself later replaced entirely by `DataValues/` and
@@ -84,10 +100,13 @@ running Docker daemon. The image builds automatically the first time any target 
   one-off class. `Models/` no longer exists as a category — every class that lived there moved to
   `DataValues/` or `Output/` (see those bullets below for which, and why).
 - `Exceptions/` holds the domain exception hierarchy: `PayplugException` (base, extends
-  `\Exception` directly) and ten subtypes — `RefundAmountException`, `PaymentNotFoundException`,
+  `\Exception` directly) and eleven subtypes — `RefundAmountException`, `PaymentNotFoundException`,
   `InvalidPhoneNumberException`, `CardOperationException`, `ApiException`,
   `InvalidOperationDataException`, `InvalidTokenException`, `InvalidNotificationException`,
-  `InvalidHostedFieldException`, `InvalidCommonFieldsException` — each
+  `InvalidHostedFieldException`, `InvalidCommonFieldsException`, `InvalidPaymentException`
+  (PRE-3590, thrown by `PaymentDtoValidator` — `PaymentDto` has its own validation rules distinct
+  from `HostedFieldDto`'s, so it gets its own exception type rather than reusing
+  `InvalidHostedFieldException`) — each
   a plain marker class extending `PayplugException` directly, with no custom constructor or
   properties, so CMS plugins can catch specific error types instead of a generic exception. Any
   future addition to this hierarchy should follow the same pattern: one class per file, no PHP
@@ -133,12 +152,13 @@ running Docker daemon. The image builds automatically the first time any target 
   `AuthorizationRequest` before the split) is the output of `OAuth2Client::buildAuthorizationUrl()`
   (`url`, `state`, `codeVerifier`) — unlike `TokenOutput`, its constructor holds no validation at
   all, since it's produced entirely internally by `OAuth2Client` and never itself reflects an
-  external response. `HostedPaymentOutput` (PRE-3587, named `HostedPaymentResult` before the split)
-  is the output of `UnifiedApiHostedPaymentService::createHostedPayment()` (`status`, `body`,
-  `redirectUrl`, `redirectHtml`) — same unvalidated-constructor reasoning as
-  `AuthorizationRequestOutput`, since it's produced entirely internally from a Unified API response
-  the service has already checked for a 2xx status. `redirectUrl`/`redirectHtml` are the two
-  derived 3DS-pending fields, both null on a direct success. Per the Unified API's own 3DS doc
+  external response. `PaymentOutput` (PRE-3587, named `HostedPaymentResult` before the
+  `DataValues`/`Output` split, renamed again as part of PRE-3590's service-merge rework) is the
+  output of `UnifiedApiPaymentService::createPayment()` (`status`, `body`, `redirectUrl`,
+  `redirectHtml`, `aliasId`) — same unvalidated-constructor reasoning as `AuthorizationRequestOutput`,
+  since it's produced entirely internally from a Unified API response the service has already
+  checked for a 2xx status. `redirectUrl`/`redirectHtml` are the two derived 3DS-pending fields,
+  both null on a direct success. Per the Unified API's own 3DS doc
   (advanced-payment-scenarios-and-features/3d-secure-implementation/using-payplugs-3ds-module),
   a pending challenge is signalled by `execCode=0001` alongside a `redirect` object shaped one of
   two ways: `redirect.html` (Base64-encoded, "recommended for web" — decoded here into
@@ -146,15 +166,22 @@ running Docker daemon. The image builds automatically the first time any target 
   self-submitting form that sends the end user to the bank's challenge page) or `redirect.url` +
   `redirect.postParams` (only when the request set `card.threeDSecure.displayMode=raw` — this
   library only extracts the bare `redirect.url` into `redirectUrl`; `postParams` isn't extracted,
-  since nothing requests raw mode yet). Neither field deliberately maps to a `PaymentOutcome`
-  constant — that mapping, for the asynchronous webhook/3DS-return confirmation that comes later,
-  is PRE-3588's job, not this ticket's. Matching tests in `tests/Output/`.
+  since nothing requests raw mode yet). `aliasId` (PRE-3590) is a third, independent derived field,
+  computed from the response body's `paymentMethod.id` (nullable): the alias identifier the
+  operation just created (`hfToken` + `paymentMethod.saveFutureUsage`) or reused (`aliasId`-based
+  payment), `null` when the operation didn't involve an alias at all. None of the three fields maps
+  to a `PaymentOutcome` constant — that mapping, for the asynchronous webhook/3DS-return
+  confirmation that comes later, is PRE-3588's job, not this ticket's. Matching tests in
+  `tests/Output/`.
 - `Dto/` is a category of its own — split out from `Models/` once more than one DTO was expected,
   rather than growing `Models/` indefinitely (see the top-level-categories bullet above). Holds
-  four classes, all assembled by the CMS plugin itself as input to a payment-creation call, with
-  the same unvalidated-constructor reasoning as `AuthorizationRequestOutput`/`HostedPaymentOutput`
-  in `Output/` (validation is a separate step — `HostedFieldDtoValidator`/`CommonFieldsDtoValidator`,
-  see `Validators/` below — rather than folded into construction). `BrowserDto` (`ip`, `referrer`,
+  ten classes, all assembled by the CMS plugin itself as input to a
+  payment-creation call, with the same unvalidated-constructor reasoning as
+  `AuthorizationRequestOutput`/`PaymentOutput` in `Output/` (validation is a separate step —
+  `HostedFieldDtoValidator`/`PaymentDtoValidator`/`CommonFieldsDtoValidator`, see `Validators/`
+  below — rather than folded into construction). Both `HostedFieldDto` and `PaymentDto` implement
+  the `PaymentRequestPayload` interface (see `Contracts/` below — moved there from this category)
+  and `use` the `BuildsCommonPayloadBody` trait (see `Traits/` below). `BrowserDto` (`ip`, `referrer`,
   `userAgent`, all required constructor parameters) and `CustomerDto` (`id`, `email`, both
   required) hold end-user context reusable by any future payment-method DTO, not just
   hosted-fields — real Unified API payloads for raw-card and Apple Pay payments both carry the
@@ -162,28 +189,99 @@ running Docker daemon. The image builds automatically the first time any target 
   (rather than a loose array) is what actually enforces the Unified API schema's "all sub-fields
   present together or none" rule now: a partial `BrowserDto`/`CustomerDto` can't be constructed, so
   `HostedFieldDtoValidator` no longer needs to check for that shape at runtime. Both expose
-  `toArray(): array` for `HostedFieldDto::createPayloadBody()` to call. `CommonFieldsDto` holds the
-  payment-creation fields common to every payment method — `accountId`/`amount`/`currency`/
-  `orderId`/`submerchantExternalId` as required constructor parameters (`submerchantExternalId`
-  added by PRE-3587 for marketplace/sub-merchant routing), `description`/`capture` (default
-  `true`)/`descriptor`/`notificationUrl`/`extraData`/`successUrl`/`cancelUrl` as public properties
-  set by direct assignment after construction (`successUrl`/`cancelUrl` added to carry the 3DS/SCA
-  challenge's redirect-return URLs — see the `redirect` object in `createPayloadBody()` below) —
-  reusable the same way `BrowserDto`/`CustomerDto` are. `HostedFieldDto` composes
-  all three (`CommonFieldsDto $common`, `?BrowserDto $browser = null`, `?CustomerDto $customer =
-  null`) plus its own two payment-method-specific fields (`hfToken`, `?array $paymentMethod =
-  null`) — a 5-parameter constructor, replacing what had grown to 13 parameters directly on
-  `HostedFieldDto` and tripped SonarCloud's `php:S107` ("too many parameters") check. `paymentMethod`
-  stays a plain array rather than its own DTO: for hosted-fields it's only ever `details`
-  (fullName/selectedBrand/validityDate), and a real `PaymentMethodDto` would need to know what a
-  raw-card flow needs too — a shape that isn't known yet, so it isn't guessed at. `createPayloadBody():
-  array` builds the exact Unified API request body this DTO describes, reading `$this->common->*`
-  directly for the fields `CommonFieldsDto` owns (they land in different shapes in the body —
-  `accountId` nests under `account.id`, `successUrl`/`cancelUrl` nest under a conditional
-  `redirect` object, the rest are flat) and calling `->toArray()` on
-  `browser`/`customer` when non-null; every field the body needs still lives across these four
-  DTOs, so `UnifiedApiHostedPaymentService` (see `Services/` below) has nothing left to construct
-  itself. Matching tests in `tests/Dto/`.
+  `toArray(): array` for `HostedFieldDto`/`PaymentDto`'s `createPayloadBody()` to call.
+  `AddressDto` (`line`, `city`, `country`, `state`, `zipCode`, all optional constructor parameters
+  defaulting to `null`) models the `address` sub-object nested identically under a payment's
+  optional `billing`/`shipping` blocks, per the Unified API's aliasing doc
+  (advanced-payment-features/save-a-card/using-payplug-aliasing) — unlike `BrowserDto`/
+  `CustomerDto`, the schema has no "all sub-fields together or none" rule for this one (every field
+  is individually optional), so it takes the opposite shape: all-nullable constructor parameters,
+  and `toArray(): array` (via the `OmitsNullPropertiesFromArray` trait, see `Traits/` below) omits
+  whichever fields are still `null` instead of always emitting the
+  full set. `ContactDto` (`firstName`, `lastName`, `phone`, `mobilePhone`, same all-nullable
+  pattern) factors out the one sibling-field group `BillingDto`/`ShippingDto` share identically —
+  split out once `ShippingDto`'s own constructor grew to 10 parameters and tripped SonarCloud's
+  `php:S107` ("too many parameters") check. Distinct from `CustomerDto` (`id`/`email`, both
+  required together, identifying the payer for the top-level `customer` risk/3DS context sent
+  alongside every payment): `ContactDto` is billing/shipping contact detail nested only inside
+  those two optional blocks — a future payment method needing "who is paying" should compose
+  `CustomerDto`, not this one. `ShippingScheduleDto` (`addressType`, `timeFrame`, `addressDate`,
+  same all-nullable pattern) factors `ShippingDto`'s own remaining "delivery scheduling" trio out
+  of its constructor too — a durable domain grouping (these three describe when/how a shipment is
+  delivered), not just a second parameter-count workaround, and what gives `ShippingDto`'s
+  constructor real headroom below `php:S107`'s limit rather than landing exactly on it the way the
+  `ContactDto` extraction alone would have. `billing`/`shipping` are modeled as their own DTOs,
+  matching the API's actual architecture rather than
+  treating `address` as the top-level shape: `BillingDto` composes an `AddressDto` (its `$address`
+  property), a `ContactDto` (its `$contact` property), plus its own remaining sibling field
+  (`title`) — a 3-parameter constructor, never near `php:S107`'s limit itself (it composes
+  `ContactDto` deliberately, for consistency with `ShippingDto`, not because of its own
+  complexity); `ShippingDto` is its sibling, composing the same `AddressDto`/`ContactDto` pair plus
+  a `ShippingScheduleDto` (its `$schedule` property) and its own remaining sibling fields (`email`,
+  `companyName` — no `title`) — a 5-parameter constructor. All four (`AddressDto`, `ContactDto`,
+  `ShippingScheduleDto`, and by extension `BillingDto`/`ShippingDto`) follow the same
+  all-nullable-parameters-and-omit-when-null pattern, and `BillingDto`/`ShippingDto` each flatten
+  their composed `ContactDto`/`ShippingScheduleDto::toArray()` results directly into their own
+  `toArray()` (via `array_merge()`, after the `"address"` key) rather than nesting them under a
+  `"contact"`/`"schedule"` key — matching the Unified API's own flat shape (`billing.firstName`,
+  not `billing.contact.firstName`) — so a `BillingDto`/`ShippingDto` instance's `toArray()` is
+  already the exact `"billing"`/`"shipping"` body value, with no further wrapping needed by any
+  caller. Matching tests in `tests/Dto/`.
+  `CommonFieldsDto` holds the payment-creation fields common to every payment method —
+  `accountId`/`amount`/`currency`/`orderId`/`submerchantExternalId` as required constructor
+  parameters (`submerchantExternalId` added by PRE-3587 for marketplace/sub-merchant routing),
+  `description`/`capture` (default `true`)/`descriptor`/`notificationUrl`/`extraData`/`billing`/
+  `shipping`/`successUrl`/`cancelUrl` as public properties set by direct assignment after
+  construction (`successUrl`/`cancelUrl` added to carry the 3DS/SCA challenge's redirect-return
+  URLs; `billing`/`shipping`, typed `?BillingDto`/`?ShippingDto`, added to carry those two blocks —
+  see `BuildsCommonPayloadBody` below) — reusable the same way `BrowserDto`/`CustomerDto` are.
+  `description` stays nullable and settable after construction like the other optional fields
+  (kept that way rather than promoted to a required constructor parameter, to avoid a breaking
+  change for existing callers) — but unlike them it's never conditionally omitted from the body:
+  a real staging request that left it unset came back `400 Bad Request` — `"The parameter
+  \"description\" is missing."` — despite the Unified API's own docs describing it as optional, so
+  `BuildsCommonPayloadBody` (see `Traits/` below) sends the key (even `null`) unconditionally
+  instead.
+  `HostedFieldDto` implements `PaymentRequestPayload` (see `Contracts/` below), `use`s
+  `BuildsCommonPayloadBody` (see `Traits/` below), and
+  composes all three (`CommonFieldsDto $common`, `?BrowserDto $browser = null`, `?CustomerDto
+  $customer = null`) plus its own payment-method-specific fields (`string $hfToken`, `?string
+  $recurringMode = null`, `?array $paymentMethod = null`) — a 6-parameter constructor. `hfToken` is
+  required (non-nullable): a hosted-fields payment cannot exist without one, and (PRE-3590, revised)
+  it never coexists with an alias identifier on this object at all — see `PaymentDto` below for that
+  flow, kept on a separate DTO instead of a nullable/mutually exclusive pair of fields on this one,
+  so the constraint holds by construction rather than by a runtime check (an earlier version of
+  this ticket tried `hfToken`/`aliasId` as two nullable fields on this same class with a validator
+  enforcing "exactly one"; reverted after review in favor of the two-DTO split). `recurringMode` is
+  the one field this DTO kept for the alias-adjacent case: set alongside
+  `paymentMethod.saveFutureUsage: true` to create an alias from this hosted-fields payment for
+  future reuse; omitted otherwise. `paymentMethod` stays a plain array rather than its own DTO: for
+  hosted-fields it's only ever `details` (fullName/selectedBrand/validityDate) plus
+  `saveFutureUsage` — a real `PaymentMethodDto` would need to know what a raw-card flow needs too —
+  a shape that isn't known yet, so it isn't guessed at; it must not set `id` directly
+  (`HostedFieldDtoValidator`, see `Validators/` below, rejects that — `id` is `PaymentDto`'s
+  concern). `createPayloadBody(): array` delegates the shared skeleton to
+  `BuildsCommonPayloadBody::buildPayloadBody()`, passing only its own `hfToken` (always present) and
+  `paymentMethod`/`recurringMode` (each only when non-null) as the payment-method-specific fields.
+  Matching tests in `tests/Dto/`.
+
+  `PaymentDto` (PRE-3590, revised) is `HostedFieldDto`'s sibling for paying with an
+  already-created alias — no `hfToken`, no card data at all. Implements `PaymentRequestPayload`
+  and, like `HostedFieldDto`, `use`s `BuildsCommonPayloadBody` and composes the same
+  `CommonFieldsDto`/`BrowserDto`/`CustomerDto` trio (a frictionless 3DS attempt on a saved alias
+  still benefits from browser/customer context, and the common payment-creation fields are
+  identical regardless of payment method). Constructor:
+  `(CommonFieldsDto $common, string $aliasId, string $recurringMode, ?BrowserDto $browser = null,
+  ?CustomerDto $customer = null, ?array $paymentMethod = null)` — `aliasId` and `recurringMode` are
+  both required (the Unified API always needs both for this flow, unlike `HostedFieldDto`'s
+  optional `recurringMode`). `paymentMethod` here is `array{details?: array{fullName?: string,
+  selectedBrand?: string, validityDate?: string}}|null` — no `saveFutureUsage` in the shape, since
+  creating an alias while paying with one makes no sense; it must not set `id` directly either
+  (`PaymentDtoValidator` rejects that). `createPayloadBody()` always merges `aliasId` into
+  `paymentMethod['id']` and passes both `paymentMethod` and `recurringMode` (unconditionally — both
+  are guaranteed non-null by the constructor, unlike `HostedFieldDto`'s conditional inclusion) to
+  the same `BuildsCommonPayloadBody::buildPayloadBody()`, otherwise identical in shape to
+  `HostedFieldDto`'s method. Matching tests in `tests/Dto/`.
 - `Contracts/` holds the 8 interfaces that define the boundary between UPC and each consuming CMS
   plugin (first real consumer: UHF/Sylius) — designed around what a CMS needs to provide, not
   around the not-yet-built Unified API's shape, so they survive that later transition intact. All
@@ -217,13 +315,20 @@ running Docker daemon. The image builds automatically the first time any target 
   contract for calling the Unified API — `get(string $url, array $headers = []): array{status: int,
   body: string}` for reading resources (payment retrieval, via `Services/UnifiedApiPaymentService`)
   and `postJson(string $url, array $body, array $headers = []): array{status: int, body: string}`
-  for creating them (hosted-fields payment creation, via
-  `Services/UnifiedApiHostedPaymentService`) — kept distinct from `IOAuthHttpClient` rather than
+  for creating them (hosted-fields/alias payment creation, via
+  `Services/UnifiedApiPaymentService::createPayment()`) — kept distinct from `IOAuthHttpClient` rather than
   extending it, since token exchange (POST+form-encoded) and Unified API calls (GET/POST+bearer
   token+JSON) are different enough shapes that sharing one contract would blur both. `postJson` is
   named distinctly from `IOAuthHttpClient::post()` (not reusing "post") specifically so a class
   implementing both contracts — as `tests/Integration/Support/CurlHttpClient` does — never has to
-  guess which body encoding a single shared method name should apply.
+  guess which body encoding a single shared method name should apply. `PaymentRequestPayload`
+  (PRE-3590, moved here from `Dto/`) is a one-method interface — `createPayloadBody(): array` —
+  implemented by both `HostedFieldDto` and `PaymentDto` (see `Dto/` above); it exists purely so
+  `UnifiedApiPaymentService::createPayment()` (see `Services/` below) can accept either without a
+  native PHP union type, which this repo's PHP 7.1 floor doesn't support. Housed here despite not
+  following the other 8 interfaces' `I`-prefix convention: unlike those 8, which are the UPC↔CMS
+  boundary specifically, this one is internal plumbing between two DTOs and one service — kept a
+  plain descriptive name on purpose so it doesn't read as a ninth UPC↔CMS contract.
 - `Utilities/Helpers/` holds small static utility classes — no CMS calls, no network calls; most
   are also dependency-free, but that's not a hard rule (see `PhoneHelper` below). The first one,
   `AmountHelper`, centralizes float↔centimes amount conversion
@@ -335,24 +440,57 @@ running Docker daemon. The image builds automatically the first time any target 
   behavior. Matching test in `tests/Utilities/Helpers/`.
 - `Validators/` is a category of its own — split out from `Utilities/Helpers/` once more than one
   validator was expected, rather than growing that category indefinitely (see the
-  top-level-categories bullet above). Holds two classes (same `final class` + private-constructor
+  top-level-categories bullet above). Holds three classes (same `final class` + private-constructor
   pattern as the `Utilities/Helpers/` classes above). `CommonFieldsDtoValidator::validate(
   CommonFieldsDto $dto): void` checks `accountId`/`orderId`/`currency` non-empty and `amount` not
   negative, throwing the new `InvalidCommonFieldsException` (10th subtype in the `Exceptions/`
-  hierarchy) on the first problem found — reusable by any future payment-method DTO that composes a
-  `CommonFieldsDto`, not just `HostedFieldDto`. `HostedFieldDtoValidator::validate(HostedFieldDto
-  $dto): void` delegates to it (catching `InvalidCommonFieldsException` and wrapping it into
-  `InvalidHostedFieldException`, so `createHostedPayment()`'s existing `@throws
-  InvalidHostedFieldException` contract for callers doesn't change), then checks `hfToken`
-  non-empty — the one thing still genuinely hosted-fields-specific. The wrap reuses the original
-  message verbatim (e.g. `"accountId must not be empty."`) rather than a generic one, so a caller
-  catching `InvalidHostedFieldException` sees the same level of specificity regardless of which
-  check failed; the original exception is still attached as the previous exception either way. The
-  old `browser`/`customer` "missing a required sub-field" checks are gone entirely: now that
+  hierarchy) on the first problem found — reusable by any payment-method DTO that composes a
+  `CommonFieldsDto`, which by PRE-3590 is both `HostedFieldDto` and `PaymentDto`.
+  `HostedFieldDtoValidator::validate(HostedFieldDto $dto): void` delegates to it (catching
+  `InvalidCommonFieldsException` and wrapping it into `InvalidHostedFieldException`, so
+  `createPayment()`'s existing `@throws InvalidHostedFieldException` contract for
+  `HostedFieldDto` callers doesn't change). The wrap reuses the original message verbatim (e.g.
+  `"accountId must not be empty."`) rather than a generic one, so a caller catching
+  `InvalidHostedFieldException` sees the same level of specificity regardless of which check
+  failed; the original exception is still attached as the previous exception either way. The old
+  `browser`/`customer` "missing a required sub-field" checks are gone entirely: now that
   `HostedFieldDto::$browser`/`$customer` are typed `BrowserDto`/`CustomerDto` objects rather than
   loose arrays, a partial one can't be constructed in the first place — the DTO's own constructor
   enforces the Unified API schema's "all sub-fields present together" rule instead of a runtime
-  check. Matching tests in `tests/Validators/`.
+  check. (PRE-3590, revised) `hfToken` is `HostedFieldDto`'s only mandatory field now, so this
+  validator is back to two checks after the common-fields delegation: `Assert::notEmpty(hfToken,
+  ...)`, then a defense-in-depth rejection of a caller-supplied `paymentMethod['id']`
+  (`"paymentMethod must not set 'id' directly; use PaymentDto instead."` — that key belongs to
+  `PaymentDto`'s flow, never this one). A third, later check (this fix) is conditional rather than
+  unconditional like the first two: a private `assertFullNameSetWhenSavingFutureUsage()` returns
+  immediately unless `paymentMethod['saveFutureUsage']` is truthy per `filter_var(...,
+  FILTER_VALIDATE_BOOLEAN)` (not a strict `=== true` — a CMS plugin building this array from form
+  data may hand back `"1"`/`1` instead of a real bool, and a strict check would silently skip the
+  requirement below for exactly that input, reproducing the incident this validator exists to
+  prevent), and only then requires
+  `paymentMethod['details']['fullName']` to be a non-empty string
+  (`"paymentMethod.details.fullName must not be empty when paymentMethod.saveFutureUsage is
+  true."`) — omitting it in that specific case is what the Unified API accepts without a
+  client-facing error yet silently fails on, confirmed against a real staging request; outside
+  that one case `fullName` remains entirely optional, per `paymentMethod`'s own docblock (see
+  `Dto/` above). The `hfToken`/`aliasId` mutual-exclusivity checks from an
+  earlier version of this ticket are gone entirely: there is no `aliasId` field left on this class
+  to be mutually exclusive with, since that concern moved to `PaymentDto` below.
+
+  `PaymentDtoValidator::validate(PaymentDto $dto): void` (PRE-3590, revised) is
+  `HostedFieldDtoValidator`'s sibling for the alias-payment flow — same delegation to
+  `CommonFieldsDtoValidator`, wrapping into the new `InvalidPaymentException` (11th subtype in the
+  `Exceptions/` hierarchy) instead of `InvalidHostedFieldException`, since `PaymentDto` has its own
+  validation rules and its own callers shouldn't need to know about `HostedFieldDto`'s exception
+  type. After that: `Assert::notEmpty(aliasId, ...)`, `Assert::notEmpty(recurringMode, ...)` — both
+  mandatory (unlike `HostedFieldDto`'s optional `recurringMode`) — then the same
+  `paymentMethod['id']`-rejection check as `HostedFieldDtoValidator`, message pointing instead to
+  "the `aliasId` constructor argument." A fourth, `PaymentDto`-only check (this fix) rejects a
+  caller-supplied `paymentMethod['saveFutureUsage']` key outright (`array_key_exists()`, not a
+  truthy check — the key itself is disallowed regardless of value): `PaymentDto`'s own docblock
+  already documented that its `paymentMethod` shape has no `saveFutureUsage` field at all, since
+  creating an alias while paying with one makes no sense, but nothing enforced that at runtime
+  until now. Matching tests for both validators in `tests/Validators/`.
 - `src/Auth/` (PRE-3563) holds the two classes with real OAuth2 logic — everything else this
   ticket adds (`IOAuthHttpClient`, `PkceHelper`, `TokenOutput`, `AuthorizationRequestOutput`, both
   renamed from `Token`/`AuthorizationRequest` when `Models/` was later split into `DataValues/`/
@@ -395,11 +533,11 @@ running Docker daemon. The image builds automatically the first time any target 
   `TokenManager`/`IUnifiedApiHttpClient`/`baseUrl`/`clientId`/`clientSecret` (all `protected`
   constructor-set properties), a protected `sendGet(string $url)` and
   `sendPostJson(string $url, array $body)`, and the 401-retry-then-normalize logic shared by both —
-  extracted from `UnifiedApiPaymentService` once it got a sibling
-  (`UnifiedApiHostedPaymentService`), per this file's own prior instruction not to duplicate the
-  pattern a third time. `UnifiedApiPaymentService` (`final class`, extends
-  `AbstractUnifiedApiService`) exposes `getPayment(string $paymentId): array{status: int, body:
-  string}` — GETs `<baseUrl>/payments/<paymentId>` and returns the raw HTTP response. It does not
+  extracted from `UnifiedApiPaymentService` once its create-side counterpart (originally its own
+  sibling service, since merged back onto this same class — see below) needed the same mechanics,
+  per this file's own prior instruction not to duplicate the
+  pattern a third time. `UnifiedApiPaymentService` (`final class`, extends `AbstractUnifiedApiService`) exposes three public
+  methods. `getPayment(string $paymentId): array{status: int, body: string}` — GETs `<baseUrl>/api/payment-gateway/payments/<paymentId>` and returns the raw HTTP response. It does not
   parse the response into a value object: the full payment data model returned by the Unified API
   is explicitly out of scope for this ticket, deferred to a future one. `client_id`/`client_secret`/
   `baseUrl` are plain constructor arguments (matching `OAuth2Client`'s existing pattern) rather than
@@ -420,7 +558,7 @@ running Docker daemon. The image builds automatically the first time any target 
   above) before throwing, since a cached JWT can be rejected while still inside its cache TTL. The
   retry is deliberately bounded at one — a 401 on a token minted seconds ago is a
   credentials/permissions problem that retrying cannot fix — and the non-2xx check runs once, after
-  the possible retry (this retry-then-normalize loop now lives in `AbstractUnifiedApiService`, not
+  the possible retry (this retry-then-normalize loop lives in `AbstractUnifiedApiService`, not
   on `UnifiedApiPaymentService` itself). Matching unit test in `tests/Services/` (mocked
   `IUnifiedApiHttpClient`), plus the first genuine `tests/Integration/` test — a real curl-based
   `IOAuthHttpClient`/`IUnifiedApiHttpClient` double drives an actual call against a staging fixture
@@ -461,15 +599,24 @@ running Docker daemon. The image builds automatically the first time any target 
   `UnifiedApiOperationService`/`OperationNotFoundException` should be removed as dead code, or kept
   for a future case where the private endpoint becomes reachable, is an open decision left for a
   follow-up ticket — treat this class as unverified/likely non-functional until then.
-  `UnifiedApiHostedPaymentService` (`final class`, extends `AbstractUnifiedApiService`, PRE-3587,
-  refactored to take a `HostedFieldDto` instead of 11 positional parameters) is the create-side
-  sibling: `createHostedPayment(HostedFieldDto $dto): HostedPaymentOutput` POSTs `<baseUrl>/payments`
-  via `sendPostJson($url, $dto->createPayloadBody())`, after `HostedFieldDtoValidator::validate($dto)`
-  runs as the method's first line — see `Validators/` above for what it checks and why. The
-  request body itself is built entirely by `HostedFieldDto::createPayloadBody()` (`Dto/`, above),
-  not by the service — every field that body needs lives across `HostedFieldDto` and the
-  `CommonFieldsDto`/`BrowserDto`/`CustomerDto` it composes (see the `Dto/` bullet above for the
-  current shape), so the service has nothing left to construct. `HostedFieldDto` is built by the
+  `createPayment(PaymentRequestPayload $dto): PaymentOutput` (PRE-3587, refactored to take a
+  `HostedFieldDto` instead of 11 positional parameters at that ticket; widened to
+  `PaymentRequestPayload` and renamed from its original method name at PRE-3590; originally lived on
+  its own dedicated sibling service class until PRE-3590's follow-up rework
+  merged that class's sole method directly onto `UnifiedApiPaymentService` — once a `PaymentDto`-based
+  call involves no hosted field at all, keeping a "hosted payment" name on either the method or a
+  separate service became misleading, and there was no longer a reason to split payment-reading and
+  payment-creation across two classes) is the create-side counterpart to `getPayment()` above: POSTs
+  `<baseUrl>/api/payment-gateway/payments` via `sendPostJson($url, $dto->createPayloadBody())`, after dispatching to whichever validator
+  matches the concrete type it received — `HostedFieldDtoValidator::validate($dto)` for a
+  `HostedFieldDto`, `PaymentDtoValidator::validate($dto)` for a `PaymentDto` — as the method's first
+  lines (a two-branch `instanceof` check, needed because the two DTOs' validation rules and
+  exception types differ; see `Validators/` above for what each checks and why). The
+  request body itself is built entirely by `$dto->createPayloadBody()` (`HostedFieldDto`'s or
+  `PaymentDto`'s, whichever was passed — see `Dto/`, above), not by the service — every field
+  either body needs lives across the DTO and the `CommonFieldsDto`/`BrowserDto`/`CustomerDto` it
+  composes (see the `Dto/` bullet above for the current shape), so the service has nothing left to
+  construct for either flow. `HostedFieldDto` (the original, still-primary flow) is built by the
   CMS plugin itself and passed in whole rather than as positional
   arguments — the original ticket's own stated signature only covered the first 4 (`hfToken`,
   `amount`, `currency`, `orderId`); the other 7 (`browser`, `customer`, `description`,
@@ -488,20 +635,28 @@ running Docker daemon. The image builds automatically the first time any target 
   3DS), and adding them now would be speculative surface area for use cases nobody's asked for yet.
   `metaData` was also excluded, on suspicion it's a summarization artifact/duplicate of `extraData`
   rather than a genuine distinct field — their described purposes were near-identical in that
-  summary, unlike every other field pair. Two fields from that same candidate set were added later,
-  once an actual consumer needed them: `submerchantExternalId` (PRE-3587, marketplace/sub-merchant
-  routing — a required `CommonFieldsDto` constructor parameter, not optional like the fields below)
-  and `successUrl`/`cancelUrl` (this fix, nested under a `redirect` object — the 3DS/SCA challenge's
-  return-to-merchant URLs; the Unified API payload documents `redirect.successUrl`/
-  `redirect.cancelUrl`, confirmed by the requesting ticket owner, not merely inferred). Body:
+  summary, unlike every other field pair. Three fields from that same candidate set were added
+  later, once an actual consumer needed them: `submerchantExternalId` (PRE-3587, marketplace/
+  sub-merchant routing — a required `CommonFieldsDto` constructor parameter, not optional like the
+  fields below), `successUrl`/`cancelUrl` (nested under a `redirect` object — the 3DS/SCA
+  challenge's return-to-merchant URLs; the Unified API payload documents `redirect.successUrl`/
+  `redirect.cancelUrl`, confirmed by the requesting ticket owner, not merely inferred), and
+  `description` (this fix — kept as the nullable `CommonFieldsDto` public property it already was,
+  but stopped being conditionally omitted from the body, after a real staging request that left it
+  unset came back a `400 Bad Request`, `"The parameter \"description\" is missing."`, despite the
+  doc's own "optional" label for this field — the key must be present even when the caller never
+  set a value). Body:
   `{"account": {"id": $dto->common->accountId}, "amount", "currency", "orderId",
-  "submerchantExternalId", "capture": $dto->common->capture, "hfToken"}`, plus `"paymentMethod"`
+  "submerchantExternalId", "description": $dto->common->description, "capture":
+  $dto->common->capture, "hfToken"}`, plus `"paymentMethod"`
   (set directly from the DTO's `paymentMethod` property — its shape mirrors the Unified API's own
   nesting exactly, e.g. `['details' => ['fullName' => ..., 'selectedBrand' => ...]]`, rather than
-  being reconstructed from a flatter parameter), `"browser"`, `"customer"`, `"description"`,
+  being reconstructed from a flatter parameter), `"browser"`, `"customer"`,
   `"descriptor"`, `"notificationUrl"`, `"extraData"` — each added only when the corresponding
   property (on `HostedFieldDto` itself, or on the composed `CommonFieldsDto` for
-  `description`/`descriptor`/`notificationUrl`/`extraData` — see `Dto/` above) is non-null.
+  `descriptor`/`notificationUrl`/`extraData` — see `Dto/` above) is non-null; `description` is
+  always present regardless, even as `null`, per the same required-skeleton reasoning as
+  `submerchantExternalId`.
   `paymentMethod` is omitted entirely when that property is null **or an empty array** (not
   required, and a non-empty-but-still-array PHP value would `json_encode()` to `[]`, not `{}`) —
   the empty-array case is checked explicitly rather than relying on the null check alone, since a
@@ -524,8 +679,12 @@ running Docker daemon. The image builds automatically the first time any target 
   `paymentMethod.details`' own sub-fields (`fullName`/`selectedBrand`/`validityDate`) are all
   optional, even though the schema's free-text summary suggested `validityDate` might be required
   when `details` is sent — a real working hosted-fields Postman example omits `validityDate`
-  entirely, and that concrete example is trusted over the schema summary on this specific point;
-  `HostedFieldDtoValidator` does not enforce anything on `paymentMethod`'s shape for that reason.
+  entirely, and that concrete example is trusted over the schema summary on this specific point.
+  One exception (this fix): `paymentMethod.details.fullName` turns out to be required whenever
+  `paymentMethod.saveFutureUsage` is `true` (i.e. the request is creating an alias) — omitting it
+  triggers a silent failure on the Unified API's side rather than a clear client-facing error, so
+  `HostedFieldDtoValidator` (see `Validators/` above) now has a dedicated, conditional check for
+  exactly this case; `fullName` stays unenforced whenever `saveFutureUsage` isn't `true`.
   `capture` defaults to `true` (an immediate payment) but can be set to `false` on `CommonFieldsDto`
   for an authorization-only hold — no validation on it either, since both booleans are always valid.
   `accountId` lives on `CommonFieldsDto` (composed within `HostedFieldDto`, see `Dto/` above) rather
@@ -533,37 +692,85 @@ running Docker daemon. The image builds automatically the first time any target 
   constructor arguments (shared connection configuration: HTTP client, token manager, base URL,
   OAuth2 `clientId`/`clientSecret`), it's data about this specific payment request, not configuration
   shared across every call the service makes, and has no relationship to the OAuth2 `clientId`
-  itself. `UnifiedApiHostedPaymentService` therefore has no constructor of its own, inheriting
-  `AbstractUnifiedApiService`'s five-argument one directly — matching `UnifiedApiPaymentService`.
-  Error handling mirrors `getPayment()` (401-retry, non-2xx throws
+  itself. `UnifiedApiPaymentService` has no constructor of its own for either method — it
+  inherits `AbstractUnifiedApiService`'s five-argument one directly.
+  Error handling for `createPayment()` mirrors `getPayment()` (401-retry, non-2xx throws
   `ApiException`) minus the 404 special case, since there's no resource being looked up by id on a
-  create call; `InvalidHostedFieldException` (see `Exceptions/` above) is thrown by the validator
-  before any of that — a client-side check, not an API response. The response is parsed only enough
-  to distinguish a direct success from a 3DS-pending outcome: a private `extractRedirectUrl()` reads
-  `redirect.url` off the JSON body when present (the Unified API's own signal for pending 3DS/SCA,
-  though in practice only reachable via `card.threeDSecure.displayMode=raw` on the request — see
-  `Output/` above) and returns it as `HostedPaymentOutput::$redirectUrl` (`null` on direct success);
-  a sibling private `extractRedirectHtml()` reads `redirect.html` the same way, Base64-decodes it,
-  and returns it as `HostedPaymentOutput::$redirectHtml` — the shape actually returned by default
-  (no `displayMode` override), confirmed against a real staging 3DS-required response
-  (`execCode=0001`) from a consuming plugin's integration test. Malformed JSON, a missing field, a
-  non-string value, or (for the html variant) a value that isn't valid Base64 all yield `null`
-  rather than throwing, since these methods each extract one derived field, they do not validate
-  the full payment representation (same "out of scope" reasoning
-  as `getPayment()`). Mapping the eventual outcome to a `PaymentOutcome` constant is explicitly
+  create call; `InvalidHostedFieldException`/`InvalidPaymentException` (see `Exceptions/` above) is
+  thrown by the matching validator before any of that — a client-side check, not an API response.
+  The response is parsed only enough to distinguish a direct success from a 3DS-pending outcome,
+  and to surface any alias involved: the response body is decoded once, then a private
+  `extractNestedString()` reads `redirect.url` off it for `PaymentOutput::$redirectUrl` (`null` on
+  direct success, though in practice only reachable via `card.threeDSecure.displayMode=raw` on the
+  request — see `Output/` above) and `paymentMethod.id` for `PaymentOutput::$aliasId` (`null` when
+  the operation didn't involve an alias) — one shared method for both derived fields (PRE-3590 code
+  review), rather than two near-identical extractors each re-decoding the same body. A decoded value
+  that isn't an array (malformed JSON), or is missing/non-string at the requested path, yields
+  `null` rather than throwing, since this method extracts one derived field at a time, it does not
+  validate the full payment representation (same "out of scope" reasoning as `getPayment()`). A
+  sibling private `extractRedirectHtml()` reads `redirect.html` the same way but can't reuse
+  `extractNestedString()`: it's the "recommended for web" 3DS-pending shape — the shape actually
+  returned by default (no `displayMode` override), confirmed against a real staging 3DS-required
+  response (`execCode=0001`) from a consuming plugin's integration test — so on top of the
+  is-array/is-string checks it also Base64-decodes the value into `PaymentOutput::$redirectHtml`,
+  and treats an empty string the same as absent (`base64_decode('')` returns `''`, not `false`, so
+  without that check an empty `html` value would come back as `""` instead of `null`); a value that
+  isn't valid Base64 also yields `null` rather than throwing, same "out of scope" reasoning as
+  `extractNestedString()`. `createPayment()` itself has no separate method for alias-based payment
+  (PRE-3590, revised): the same entry point handles both `HostedFieldDto` and `PaymentDto` via the
+  shared `PaymentRequestPayload` interface, with the `instanceof` dispatch above being the only
+  place the method needs to know which concrete type it received — `createPayloadBody()` and the
+  response-handling logic below it never branch by type. This does mean a hypothetical third
+  `PaymentRequestPayload` implementation would need its own `elseif` branch added here to actually
+  get validated — until then, the dispatch's `else` branch throws `\LogicException` for it rather
+  than silently skipping validation, a fail-closed guard against exactly that gap. Accepted as a
+  reasonable trade-off given exactly two concrete DTOs exist and are planned. Mapping the
+  eventual outcome to a `PaymentOutcome` constant is explicitly
   **not** this service's job — that's PRE-3588 (parsing the asynchronous webhook/3DS-return
   confirmation), a distinct concern from this synchronous creation call. Matching unit test in
-  `tests/Services/` (rewritten to build a `HostedFieldDto` and pass it in, plus a case proving an
-  invalid DTO throws before any HTTP call), plus an equivalent `tests/Integration/` test — gated
-  behind the same `UPC_IT_*` variables plus `UPC_IT_ACCOUNT_ID` and `UPC_IT_HF_TOKEN`; unlike
+  `tests/Services/` (built around `HostedFieldDto`, plus a case proving an invalid `HostedFieldDto`
+  throws `InvalidHostedFieldException` before any HTTP call, cases covering `aliasId` extraction
+  from the response, cases covering `redirectHtml` extraction/Base64-decoding including the
+  not-valid-Base64/empty-string/non-string edge cases, and — PRE-3590, revised — a `PaymentDto`-based
+  request producing a body with no `hfToken` plus a case proving an invalid `PaymentDto` throws
+  `InvalidPaymentException` before any HTTP call), plus an equivalent `tests/Integration/` test —
+  gated behind the same `UPC_IT_*` variables plus `UPC_IT_ACCOUNT_ID` and `UPC_IT_HF_TOKEN`; unlike
   `UPC_IT_PAYMENT_ID`, `UPC_IT_HF_TOKEN` cannot be a static fixture (an hfToken is single-use and
   short-lived), so it must be freshly minted via the hosted-fields JS SDK in a browser immediately
-  before each local run.
+  before each local run. Extending that integration test for the `PaymentDto` flow is explicitly
+  out of scope for PRE-3590 (no VPN-reachable way to mint/verify a real alias in this environment)
+  — left for whoever next touches that suite with VPN access.
+- `Traits/` is a category of its own — split out from `Dto/` once `PaymentRequestPayload`
+  (moved to `Contracts/`, see that bullet above) and two traits no longer read as DTO input/output
+  shapes themselves, just internal plumbing shared across DTOs. Holds two traits.
+  `BuildsCommonPayloadBody` (PRE-3590) is a trait — not a shared abstract base class, since
+  `HostedFieldDto`/`PaymentDto` are otherwise unrelated `final class`es with no other reason to
+  share a type hierarchy — both DTOs `use`. Its `buildPayloadBody(array
+  $paymentMethodSpecificFields): array` builds the `account`/`submerchantExternalId`/`amount`/
+  `currency`/`orderId`/`description`/`capture` skeleton — `description` sits in this required
+  skeleton rather than among the optional fields below it, always present in the body (even as
+  `null`) rather than conditionally omitted, since the Unified API needs the key present at all —
+  splices in the caller's own payment-method-specific fields (preserving their key order — e.g.
+  `HostedFieldDto`'s `hfToken`, `PaymentDto`'s `paymentMethod`/`recurringMode`), then appends
+  `browser`/`customer` (via `->toArray()`, when non-null), `descriptor`/`notificationUrl`/
+  `extraData` (each when non-null), `billing`/`shipping` (each set directly from
+  `$this->common->billing->toArray()`/`$this->common->shipping->toArray()`, only when non-null —
+  no additional wrapping here, since `BillingDto`/`ShippingDto`'s own `toArray()` already produces
+  the exact body value, `address` sub-object included), and finally a `redirect` object nesting
+  `successUrl`/`cancelUrl` (only when at least one of the two is non-null) — every field either
+  DTO's body needs besides its own payment-method-specific piece. `OmitsNullPropertiesFromArray`
+  is the other trait — shared by every "plain public scalar properties, each keyed by its own
+  property name" value object in `Dto/` (`AddressDto`, `ContactDto`, `ShippingScheduleDto`) — its
+  `toArrayOmittingNulls()` does `array_filter(get_object_vars($this), ...)`, replacing what each of
+  those three classes used to hand-roll independently as a per-field `if ($this->x !== null) {
+  $arr['x'] = $this->x; }` block. Not used by `BuildsCommonPayloadBody`, whose body maps to
+  renamed/nested keys and splices in payment-method-specific fields, so a straight property dump
+  doesn't apply there.
 
 ## Documentation
 
 Every top-level `src/` category (`Auth/`, `Contracts/`, `DataValues/`, `Dto/`, `Exceptions/`,
-`Output/`, `Services/`, `Utilities/Helpers/`, `Validators/`) is documented at implementation-detail
+`Output/`, `Services/`, `Traits/`, `Utilities/Helpers/`, `Validators/`) is documented at implementation-detail
 depth (real method signatures, validation rules, design rationale) in **this file's Architecture
 section above** — one bullet per category — and must be updated in the same task/PR whenever a
 category gains, loses, or changes a class, not left for a later cleanup pass. This applies to
