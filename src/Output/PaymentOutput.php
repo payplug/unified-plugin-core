@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace PayplugUnifiedCore\Output;
 
 /**
- * Output of UnifiedApiHostedPaymentService::createHostedPayment() — unlike OperationData, its
+ * Output of UnifiedApiPaymentService::createPayment() — unlike OperationData, its
  * constructor holds no validation, since it's produced entirely internally from a Unified API
  * response the service has already checked for a 2xx status, and never crosses an external
  * boundary itself (same reasoning as AuthorizationRequestOutput).
@@ -23,8 +23,12 @@ namespace PayplugUnifiedCore\Output;
  * a PaymentOutcome constant is a separate concern (see PRE-3588), handled once the asynchronous
  * webhook/3DS-return confirmation comes back — this class only carries what's known synchronously,
  * at creation time.
+ *
+ * aliasId (PRE-3590) carries the Unified API's paymentMethod.id from the response — the alias that
+ * was just created (hfToken + paymentMethod.saveFutureUsage) or reused (aliasId-based payment).
+ * null when the operation didn't involve an alias at all.
  */
-final class HostedPaymentOutput
+final class PaymentOutput
 {
     /** @var int */
     public $status;
@@ -38,11 +42,15 @@ final class HostedPaymentOutput
     /** @var string|null */
     public $redirectHtml;
 
-    public function __construct(int $status, string $body, ?string $redirectUrl, ?string $redirectHtml = null)
+    /** @var string|null */
+    public $aliasId;
+
+    public function __construct(int $status, string $body, ?string $redirectUrl, ?string $redirectHtml, ?string $aliasId)
     {
         $this->status = $status;
         $this->body = $body;
         $this->redirectUrl = $redirectUrl;
         $this->redirectHtml = $redirectHtml;
+        $this->aliasId = $aliasId;
     }
 }

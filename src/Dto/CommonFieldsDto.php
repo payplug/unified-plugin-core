@@ -25,7 +25,10 @@ final class CommonFieldsDto
     /** @var string */
     public $orderId;
 
-    /** @var string|null */
+    /**
+     * @var string|null unlike the other optional fields below, always sent to the Unified API even
+     *      when null — see BuildsCommonPayloadBody::buildPayloadBody()
+     */
     public $description;
 
     /** @var bool true for an immediate payment, false for an authorization-only hold */
@@ -48,6 +51,12 @@ final class CommonFieldsDto
 
     /** @var string */
     public $submerchantExternalId;
+
+    /** @var BillingDto|null nested under the body's "billing" key when set */
+    public $billing;
+
+    /** @var ShippingDto|null nested under the body's "shipping" key when set */
+    public $shipping;
 
     public function __construct(string $accountId, int $amount, string $currency, string $orderId, string $submerchantExternalId)
     {
