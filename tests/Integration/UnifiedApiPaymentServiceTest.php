@@ -6,6 +6,7 @@ namespace PayplugUnifiedCore\Tests\Integration;
 
 use PayplugUnifiedCore\Auth\OAuth2Client;
 use PayplugUnifiedCore\Auth\TokenManager;
+use PayplugUnifiedCore\Exceptions\ApiException;
 use PayplugUnifiedCore\Services\UnifiedApiPaymentService;
 use PayplugUnifiedCore\Tests\Integration\Support\CurlHttpClient;
 use PayplugUnifiedCore\Tests\Integration\Support\InMemoryTokenCache;
@@ -123,6 +124,66 @@ final class UnifiedApiPaymentServiceTest extends TestCase
         // response was actually parsed into one of the two known shapes.
         if ($result->redirectUrl !== null) {
             self::assertArrayHasKey('redirect', $body);
+        }
+    }
+
+    /**
+     * UPC_IT_PAYMENT_ID is a static staging fixture also relied on, unrefunded, by
+     * testGetPaymentFetchesARealFixturePayment()'s own 'CAPTURED' assertion — so this test cannot
+     * actually complete a real refund against it without breaking that invariant on every future
+     * run (a payment can only be refunded down to zero once). Instead it drives the real
+     * createRefund() request all the way to the staging Unified API with a deliberately
+     * over-large amount, proving the auth/URL/JSON wiring end-to-end via the API's own business
+     * rejection (400) rather than by actually moving money.
+     */
+    public function testCreateRefundIsRejectedByTheApiWhenTheAmountExceedsThePayment(): void
+    {
+        $env = $this->requireEnv([
+            'UPC_IT_OAUTH_BASE_URL',
+            'UPC_IT_OAUTH_SCOPE',
+            'UPC_IT_OAUTH_AUDIENCE',
+            'UPC_IT_CLIENT_ID',
+            'UPC_IT_CLIENT_SECRET',
+            'UPC_IT_UNIFIED_API_BASE_URL',
+            'UPC_IT_ACCOUNT_ID',
+            'UPC_IT_PAYMENT_ID',
+            'UPC_IT_SUBMERCHANT_ID',
+        ]);
+
+        if ($env === null) {
+            return;
+        }
+
+        $httpClient = new CurlHttpClient();
+        $oauth2Client = new OAuth2Client(
+            $httpClient,
+            $env['UPC_IT_OAUTH_BASE_URL'],
+            'https://merchant.example.com/callback',
+            $env['UPC_IT_OAUTH_SCOPE'],
+            $env['UPC_IT_OAUTH_AUDIENCE']
+        );
+        $tokenManager = new TokenManager(new InMemoryTokenCache(), $oauth2Client);
+
+        $service = new UnifiedApiPaymentService(
+            $httpClient,
+            $tokenManager,
+            $env['UPC_IT_UNIFIED_API_BASE_URL'],
+            $env['UPC_IT_CLIENT_ID'],
+            $env['UPC_IT_CLIENT_SECRET']
+        );
+
+        try {
+            $service->createRefund(
+                $env['UPC_IT_PAYMENT_ID'],
+                $env['UPC_IT_ACCOUNT_ID'],
+                'upc-it-refund-test',
+                'UPC integration test refund',
+                $env['UPC_IT_SUBMERCHANT_ID'],
+                999999999
+            );
+            self::fail('Expected the Unified API to reject a refund amount larger than the payment.');
+        } catch (ApiException $e) {
+            self::assertSame(400, $e->getCode());
         }
     }
 

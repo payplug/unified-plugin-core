@@ -34,7 +34,8 @@ that same call also creates or pays with a card alias, via either of two caller-
 (`HostedFieldDto` or `PaymentDto`) sharing one `PaymentRequestPayload` interface — and, as of
 PRE-3590's follow-up rework, the payment-creation method `createPayment()` (renamed from its
 original name) lives directly on `UnifiedApiPaymentService` itself rather than on a separate
-sibling service, which no longer exists; and two more
+sibling service, which no longer exists. `UnifiedApiPaymentService` also exposes `createRefund()`
+(PRE-3589) for a full or partial refund of a payment; and two more
 categories: `src/Dto/` (`HostedFieldDto`, `hfToken`-driven hosted-fields payment, optionally also
 creating an alias via `recurringMode`; `PaymentDto`, paying with an already-created alias instead,
 no `hfToken` at all; `BillingDto`/
@@ -100,13 +101,16 @@ running Docker daemon. The image builds automatically the first time any target 
   one-off class. `Models/` no longer exists as a category — every class that lived there moved to
   `DataValues/` or `Output/` (see those bullets below for which, and why).
 - `Exceptions/` holds the domain exception hierarchy: `PayplugException` (base, extends
-  `\Exception` directly) and eleven subtypes — `RefundAmountException`, `PaymentNotFoundException`,
+  `\Exception` directly) and thirteen subtypes — `RefundAmountException`, `PaymentNotFoundException`,
   `InvalidPhoneNumberException`, `CardOperationException`, `ApiException`,
   `InvalidOperationDataException`, `InvalidTokenException`, `InvalidNotificationException`,
   `InvalidHostedFieldException`, `InvalidCommonFieldsException`, `InvalidPaymentException`
   (PRE-3590, thrown by `PaymentDtoValidator` — `PaymentDto` has its own validation rules distinct
   from `HostedFieldDto`'s, so it gets its own exception type rather than reusing
-  `InvalidHostedFieldException`) — each
+  `InvalidHostedFieldException`), `OperationNotFoundException`, `InvalidRefundRequestException`
+  (PRE-3589, thrown by `createRefund()` when `orderId`/`description`/`submerchantExternalId` is
+  empty, checked locally before any HTTP call since `ApiException` only carries the HTTP status,
+  not which field the API's own response said was missing) — each
   a plain marker class extending `PayplugException` directly, with no custom constructor or
   properties, so CMS plugins can catch specific error types instead of a generic exception. Any
   future addition to this hierarchy should follow the same pattern: one class per file, no PHP
@@ -578,6 +582,83 @@ running Docker daemon. The image builds automatically the first time any target 
   failure the same way, so a dedicated type would add a distinction nothing currently uses.
   Everything else (401-retry, non-2xx handling) is inherited from `AbstractUnifiedApiService`
   unchanged. Matching unit test in `tests/Services/`.
+  `UnifiedApiPaymentService` also exposes `createRefund(string $operationId, string $accountId,
+  string $orderId, string $description, string $submerchantExternalId, ?int $amount = null):
+  array{status: int, body: string}` (PRE-3589) — a full or partial refund of a payment, added as a
+  method on this class (rather than a new `Services/` class) because the Unified API's own
+  `createRefund` doc (`POST /v2/payments/{id}/refund`, confirmed against both the public GitBook
+  OpenAPI schema and the team's own Confluence URL reference page) keys the refund by the payment's
+  own id — the exact same value this library's `OperationData`/webhook vocabulary already calls
+  `operationId` (see `WebhookNotificationHelper` above), so no new identifier concept or class was
+  needed; `UnifiedApiPaymentService` already owns `PAYMENT_PATH`/`HTTP_NOT_FOUND` handling for that
+  same id. `REFUND_PATH` carries the same `/api/payment-gateway` prefix PRE-3590 gave
+  `PAYMENT_PATH`/`PAYMENTS_PATH` (confirmed against the real staging API, whose own error responses
+  echo back `/api/payment-gateway/payments/<id>/refund` as the request path) — `OPERATION_PATH`
+  deliberately does not share that prefix, since it routes to a distinct microservice
+  (`processing-operations`) behind the same API gateway host. The ticket's own literal 2-parameter
+  signature (`CreateRefund(operationId, amount)`)
+  omits every one of `accountId`/`orderId`/`description`/`submerchantExternalId` — each added
+  because the real staging API requires it; same "doc/API over ticket text" precedent as
+  PRE-3587's `submerchantExternalId`/`successUrl`/`cancelUrl`. `accountId` is required per the
+  `InitiateRefundRequest`/`RefundOperationRequest` schemas.
+  **Design history, corrected twice against the real API rather than the doc alone:**
+  `orderId` was initially left optional at design time (the GitBook doc's two schemas disagreed on
+  this), but PRE-3552's first round of real-environment testing (2026-08-27) found a body carrying
+  neither `orderId` nor `description` rejected with HTTP 400
+  (`"The parameter \"description or orderId\" is missing."`), which at the time read as an
+  either/or requirement and led to sending `orderId` alone. That reading turned out to be wrong: a
+  second, more granular round of real-API testing the same day — probing each field's absence
+  individually rather than trusting the combined error message's wording — found `orderId` alone
+  still rejected (`"The parameter \"description\" is missing."`), and `description` alone also
+  still rejected (`"The parameter \"orderId\" is missing."`). Both are required together; the
+  original message's "description or orderId" phrasing was the API concatenating two independently
+  missing fields, not describing an either/or rule. `description` is a short free-text note with no
+  server-side format requirement observed; since neither `OperationData` nor any existing caller
+  carries a natural refund description, the CMS-plugin-side caller is expected to synthesize one
+  (see the Sylius plugin's own `UnifiedApiRefundCreator` for its exact wording) rather than this
+  library inventing merchant-facing copy. Once both were present, that same testing round surfaced
+  a third missing field this account's submerchant routing requires: `subMerchantExternalId` per
+  the API's own error message — but sending exactly that capitalization at the top level still
+  didn't satisfy the check; only the lower-case `submerchantExternalId` key (the exact same key
+  `HostedFieldDto::createPayloadBody()` already sends at payment-creation time) does. This is
+  recorded as a confirmed, reproduced-on-staging finding, not a guess: the capitalized key from the
+  API's own error text is misleading, and a future maintainer should not "fix" the casing here to
+  match that error message. `$amount` is optional and in cents: omitted, the Unified API refunds
+  100% of the payment/capture amount (a full refund); given, it's a partial refund of that amount.
+  The Unified API itself rejects an amount exceeding what was captured (HTTP 400), so that business
+  rule isn't duplicated client-side — only a `$amount` that's zero or negative is rejected up
+  front, via `Assert::positive()`, throwing the existing `RefundAmountException` (present in the
+  `Exceptions/` hierarchy since before this ticket, previously unused) before any HTTP call.
+  `$orderId`, `$description`, and `$submerchantExternalId` get the same local, fail-fast treatment
+  via `Assert::notEmpty()`, throwing the new `InvalidRefundRequestException` (13th subtype in the
+  `Exceptions/` hierarchy) — added specifically because `ApiException` carries only the HTTP status
+  code, not the API's response body, so an empty required field previously surfaced as an opaque
+  `"Unified API refund request failed with HTTP status 400."` with no indication of which field was
+  missing (exactly the ambiguity this same ticket's own debugging session hit before the real cause
+  was found). Request body: `{"account": {"id": $accountId}, "orderId": $orderId, "description": $description,
+  "submerchantExternalId": $submerchantExternalId}` plus `"amount"` only when non-null. Error
+  handling mirrors `getPayment()` exactly (same resource, same id): a 404 throws
+  `PaymentNotFoundException`, any other non-2xx throws `ApiException`; 401-retry and
+  malformed-response handling are inherited from `AbstractUnifiedApiService` unchanged. The GitBook
+  doc page for this endpoint embeds two mutually inconsistent OpenAPI snippets (a stale-content
+  issue, not a UPC one) — one had `orderId` optional, the other had it in a `required` array
+  alongside fields (`id`, `type`) that don't even exist in that schema's own properties, which read
+  as templating artifacts at the time and caused `orderId` to be dropped entirely from the first
+  implementation; the real API's behavior (above) shows that second schema was closer to right on
+  this point, wrong-looking `required` array notwithstanding, though even it didn't capture the
+  full requirement (`description` and `submerchantExternalId` too) — a reminder that a doc
+  inconsistency isn't safe to resolve by picking whichever reading is simpler, or by trusting a
+  single round of empirical testing without probing each field independently. The remaining fields
+  both snippets disagreed on or omitted (`currency`, `authentication`, `paymentMethod`) are still
+  out of this ticket's scope, same YAGNI reasoning as `createPayment()`'s excluded fields (see
+  below). Matching unit test in `tests/Services/`, plus an integration test in `tests/Integration/`
+  (requires the new `UPC_IT_SUBMERCHANT_ID` env var, see `.env.example`) — it cannot actually
+  complete a real refund against the suite's static `UPC_IT_PAYMENT_ID` fixture without breaking
+  that same fixture's `'CAPTURED'` invariant relied on by `UnifiedApiPaymentServiceTest`'s own
+  `getPayment()` test (a payment can only be refunded to zero once), so it instead drives a real
+  request all the way to staging with a deliberately over-large amount and asserts the API's own
+  400 rejection — proving the auth/URL/JSON wiring end-to-end without mutating shared fixture
+  state.
   `UnifiedApiOperationService` (`final class`, extends `AbstractUnifiedApiService`) is
   `UnifiedApiPaymentService`'s sibling for the operation resource rather than a method on it: an
   operation (one processing event — a payment, a capture, a refund — identified by an id drawn
