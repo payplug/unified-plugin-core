@@ -10,14 +10,17 @@ use PayplugUnifiedCore\Dto\PaymentDto;
 use PayplugUnifiedCore\Exceptions\ApiException;
 use PayplugUnifiedCore\Exceptions\InvalidHostedFieldException;
 use PayplugUnifiedCore\Exceptions\InvalidPaymentException;
+use PayplugUnifiedCore\Exceptions\InvalidRefundRequestException;
 use PayplugUnifiedCore\Exceptions\PaymentNotFoundException;
+use PayplugUnifiedCore\Exceptions\RefundAmountException;
 use PayplugUnifiedCore\Output\PaymentOutput;
+use PayplugUnifiedCore\Utilities\Helpers\Assert;
 use PayplugUnifiedCore\Validators\HostedFieldDtoValidator;
 use PayplugUnifiedCore\Validators\PaymentDtoValidator;
 
 /**
- * Reads payments and payment operations, and creates payments, against the Unified API,
- * authenticated via TokenManager's client-credentials JWT.
+ * Reads payments and payment operations, creates payments, and creates refunds, against the
+ * Unified API, authenticated via TokenManager's client-credentials JWT.
  *
  * getPayment() (PRE-3576) fetches a payment and returns the raw HTTP response (status + body),
  * not a parsed payment model — the full payment data model is separate, future scope.
@@ -51,13 +54,18 @@ use PayplugUnifiedCore\Validators\PaymentDtoValidator;
  * which defaults to true on both DTOs but can be set to false for an authorization-only hold) —
  * every field that body needs lives on the DTO, so this service just forwards it to
  * sendPostJson() rather than reconstructing it.
+ *
+ * createRefund() (PRE-3589) creates a full or partial refund of a payment.
  */
 final class UnifiedApiPaymentService extends AbstractUnifiedApiService
 {
     // PAYMENT_PATH takes a %s id, for getPayment(); PAYMENTS_PATH is the plain collection endpoint
-    // createPayment() POSTs to. Similar names, deliberately distinct constants.
+    // createPayment() POSTs to; REFUND_PATH takes a %s id, for createRefund() — same
+    // /api/payment-gateway prefix as the other payment endpoints, confirmed against the real
+    // staging API. Similar names, deliberately distinct constants.
     private const PAYMENT_PATH = '/api/payment-gateway/payments/%s';
     private const PAYMENTS_PATH = '/api/payment-gateway/payments';
+    private const REFUND_PATH = '/api/payment-gateway/payments/%s/refund';
     // OPERATION_PATH takes a %s id, for getOperation().
     private const OPERATION_PATH = '/processing-operations/operations/public/%s';
     private const HTTP_NOT_FOUND = 404;
@@ -196,5 +204,82 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
         $decoded = base64_decode($data['redirect']['html'], true);
 
         return false !== $decoded ? $decoded : null;
+    }
+
+    /**
+     * Creates a full or partial refund of a payment. Per the Unified API's own createRefund
+     * documentation, the refund is keyed by the payment's own id — the same value this library's
+     * OperationData/webhook vocabulary already calls "operationId" (see WebhookNotificationHelper),
+     * so that's the parameter name used here rather than introducing a second name for the same
+     * value. Omitting $amount refunds the payment's full remaining amount; the Unified API itself
+     * rejects an amount exceeding what was captured, so that check isn't duplicated here.
+     * $orderId, $description, and $submerchantExternalId are all required — confirmed against the
+     * real staging API (2026-08-27) by probing each field's absence individually, not merely the
+     * GitBook doc: a body carrying only $orderId is rejected with 400
+     * ("The parameter \"description\" is missing."), a body carrying only $description is
+     * rejected with 400 ("The parameter \"orderId\" is missing."), and a body carrying both but no
+     * $submerchantExternalId is rejected with 400 ("The parameter \"subMerchantExternalId\" is
+     * missing.") — despite that error text's capitalization, the field the API actually validates
+     * on is the same lower-case "submerchantExternalId" key HostedFieldDto::createPayloadBody()
+     * already sends at payment-creation time (confirmed empirically: the capitalized key from the
+     * error message itself does not satisfy the check, but this lower-case key does), so no new
+     * casing convention is introduced. This corrects this method's own prior design-time
+     * assumption (recorded here until PRE-3552's real-environment testing on 2026-08-27 corrected
+     * it) that $orderId alone satisfied an "at least one of the two" requirement — the true
+     * requirement is all three fields together, at least for a submerchant-routed account.
+     *
+     * @return array{status: int, body: string}
+     * @throws InvalidRefundRequestException if $orderId, $description, or $submerchantExternalId
+     *                                       is empty — checked locally before any HTTP call, since
+     *                                       ApiException carries only the HTTP status, not the
+     *                                       API's own response body naming which field was missing.
+     * @throws RefundAmountException if $amount is given and is zero or negative
+     * @throws PaymentNotFoundException if the Unified API has no payment with that id (HTTP 404).
+     *                                  A sibling of ApiException, not a subclass — catching
+     *                                  ApiException alone will not catch this.
+     * @throws ApiException if the request fails, returns any other non-2xx status, or the response
+     *                      is malformed. getCode() carries the HTTP status when one was received,
+     *                      and 0 when the client's response shape was unusable.
+     */
+    public function createRefund(
+        string $operationId,
+        string $accountId,
+        string $orderId,
+        string $description,
+        string $submerchantExternalId,
+        ?int $amount = null
+    ): array {
+        Assert::notEmpty($orderId, 'orderId', InvalidRefundRequestException::class);
+        Assert::notEmpty($description, 'description', InvalidRefundRequestException::class);
+        Assert::notEmpty($submerchantExternalId, 'submerchantExternalId', InvalidRefundRequestException::class);
+
+        if ($amount !== null) {
+            Assert::positive($amount, 'amount', RefundAmountException::class);
+        }
+
+        $url = $this->baseUrl . \sprintf(self::REFUND_PATH, rawurlencode($operationId));
+
+        $body = [
+            'account' => ['id' => $accountId],
+            'orderId' => $orderId,
+            'description' => $description,
+            'submerchantExternalId' => $submerchantExternalId,
+        ];
+
+        if ($amount !== null) {
+            $body['amount'] = $amount;
+        }
+
+        $response = $this->sendPostJson($url, $body);
+
+        if ($response['status'] === self::HTTP_NOT_FOUND) {
+            throw new PaymentNotFoundException(\sprintf('Unified API has no payment "%s".', $operationId), self::HTTP_NOT_FOUND);
+        }
+
+        if ($response['status'] < 200 || $response['status'] >= 300) {
+            throw new ApiException(\sprintf('Unified API refund request failed with HTTP status %d.', $response['status']), $response['status']);
+        }
+
+        return $response;
     }
 }

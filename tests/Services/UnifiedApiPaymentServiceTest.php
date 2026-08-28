@@ -17,7 +17,9 @@ use PayplugUnifiedCore\Dto\CustomerDto;
 use PayplugUnifiedCore\Exceptions\ApiException;
 use PayplugUnifiedCore\Exceptions\InvalidHostedFieldException;
 use PayplugUnifiedCore\Exceptions\InvalidPaymentException;
+use PayplugUnifiedCore\Exceptions\InvalidRefundRequestException;
 use PayplugUnifiedCore\Exceptions\PaymentNotFoundException;
+use PayplugUnifiedCore\Exceptions\RefundAmountException;
 use PayplugUnifiedCore\Output\PaymentOutput;
 use PayplugUnifiedCore\Services\UnifiedApiPaymentService;
 use PayplugUnifiedCore\Tests\Support\HostedFieldDtoBuilder;
@@ -786,6 +788,182 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
         $this->expectException(InvalidHostedFieldException::class);
         $this->expectExceptionMessage('hfToken must not be empty.');
         $service->createPayment(HostedFieldDtoBuilder::valid()->withHfToken('')->build());
+    }
+
+    public function testCreateRefundSendsAccountIdAndOrderIdAndReturnsStatusAndBodyOnAFullRefund(): void
+    {
+        $body = json_encode(['id' => 'pay_123', 'execCode' => '0000']);
+
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(
+                'https://api.payplug.com/api/payment-gateway/payments/pay_123/refund',
+                [
+                    'account' => ['id' => 'acc_123'],
+                    'orderId' => 'order_1',
+                    'description' => 'Refund for order order_1',
+                    'submerchantExternalId' => 'sub_1',
+                ],
+                ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
+            )
+            ->andReturn(['status' => 200, 'body' => $body]);
+
+        $service = $this->makeService($httpClient);
+
+        self::assertSame(['status' => 200, 'body' => $body], $service->createRefund('pay_123', 'acc_123', 'order_1', 'Refund for order order_1', 'sub_1'));
+    }
+
+    public function testCreateRefundIncludesAmountInTheBodyForAPartialRefund(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(
+                'https://api.payplug.com/api/payment-gateway/payments/pay_123/refund',
+                [
+                    'account' => ['id' => 'acc_123'],
+                    'orderId' => 'order_1',
+                    'description' => 'Refund for order order_1',
+                    'submerchantExternalId' => 'sub_1',
+                    'amount' => 500,
+                ],
+                ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
+            )
+            ->andReturn(['status' => 200, 'body' => '{}']);
+
+        $service = $this->makeService($httpClient);
+
+        self::assertSame(['status' => 200, 'body' => '{}'], $service->createRefund('pay_123', 'acc_123', 'order_1', 'Refund for order order_1', 'sub_1', 500));
+    }
+
+    public function testCreateRefundUrlEncodesTheOperationId(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(
+                'https://api.payplug.com/api/payment-gateway/payments/pay%2F123%20456/refund',
+                [
+                    'account' => ['id' => 'acc_123'],
+                    'orderId' => 'order_1',
+                    'description' => 'Refund for order order_1',
+                    'submerchantExternalId' => 'sub_1',
+                ],
+                ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
+            )
+            ->andReturn(['status' => 200, 'body' => '{}']);
+
+        $service = $this->makeService($httpClient);
+
+        self::assertSame(['status' => 200, 'body' => '{}'], $service->createRefund('pay/123 456', 'acc_123', 'order_1', 'Refund for order order_1', 'sub_1'));
+    }
+
+    public function testCreateRefundThrowsInvalidRefundRequestExceptionForAnEmptyOrderIdBeforeAnyNetworkCall(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldNotReceive('postJson');
+
+        $service = $this->makeService($httpClient, 'https://api.payplug.com', $this->makeTokenManagerExpectingNoInteraction());
+
+        $this->expectException(InvalidRefundRequestException::class);
+        $this->expectExceptionMessage('orderId must not be empty.');
+        $service->createRefund('pay_123', 'acc_123', '', 'Refund for order order_1', 'sub_1');
+    }
+
+    public function testCreateRefundThrowsInvalidRefundRequestExceptionForAnEmptyDescriptionBeforeAnyNetworkCall(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldNotReceive('postJson');
+
+        $service = $this->makeService($httpClient, 'https://api.payplug.com', $this->makeTokenManagerExpectingNoInteraction());
+
+        $this->expectException(InvalidRefundRequestException::class);
+        $this->expectExceptionMessage('description must not be empty.');
+        $service->createRefund('pay_123', 'acc_123', 'order_1', '', 'sub_1');
+    }
+
+    public function testCreateRefundThrowsInvalidRefundRequestExceptionForAnEmptySubmerchantExternalIdBeforeAnyNetworkCall(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldNotReceive('postJson');
+
+        $service = $this->makeService($httpClient, 'https://api.payplug.com', $this->makeTokenManagerExpectingNoInteraction());
+
+        $this->expectException(InvalidRefundRequestException::class);
+        $this->expectExceptionMessage('submerchantExternalId must not be empty.');
+        $service->createRefund('pay_123', 'acc_123', 'order_1', 'Refund for order order_1', '');
+    }
+
+    /**
+     * @dataProvider nonPositiveAmountProvider
+     */
+    public function testCreateRefundThrowsRefundAmountExceptionForANonPositiveAmountBeforeAnyNetworkCall(int $amount): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldNotReceive('postJson');
+
+        $service = $this->makeService($httpClient, 'https://api.payplug.com', $this->makeTokenManagerExpectingNoInteraction());
+
+        $this->expectException(RefundAmountException::class);
+        $this->expectExceptionMessage('amount must be greater than zero.');
+        $service->createRefund('pay_123', 'acc_123', 'order_1', 'Refund for order order_1', 'sub_1', $amount);
+    }
+
+    /**
+     * @return array<string, array{int}>
+     */
+    public function nonPositiveAmountProvider(): array
+    {
+        return [
+            'zero' => [0],
+            'negative' => [-500],
+        ];
+    }
+
+    public function testCreateRefundThrowsPaymentNotFoundExceptionOnA404(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 404, 'body' => '{"error":"not_found"}']);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(PaymentNotFoundException::class);
+        $this->expectExceptionMessage('Unified API has no payment "pay_123".');
+        $this->expectExceptionCode(404);
+        $service->createRefund('pay_123', 'acc_123', 'order_1', 'Refund for order order_1', 'sub_1');
+    }
+
+    public function testCreateRefundThrowsApiExceptionOnNonSuccessStatus(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 500, 'body' => '{"error":"boom"}']);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(ApiException::class);
+        $this->expectExceptionMessage('Unified API refund request failed with HTTP status 500.');
+        $this->expectExceptionCode(500);
+        $service->createRefund('pay_123', 'acc_123', 'order_1', 'Refund for order order_1', 'sub_1');
+    }
+
+    public function testCreateRefundRetriesOnceWithAFreshTokenWhenTheCachedOneIsRejected(): void
+    {
+        $url = 'https://api.payplug.com/api/payment-gateway/payments/pay_123/refund';
+
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with($url, Mockery::any(), ['Authorization' => 'Bearer stale-jwt', 'Content-Type' => 'application/json'])
+            ->andReturn(['status' => 401, 'body' => '{"error":"invalid_token"}']);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with($url, Mockery::any(), ['Authorization' => 'Bearer fresh-jwt', 'Content-Type' => 'application/json'])
+            ->andReturn(['status' => 200, 'body' => '{}']);
+
+        $service = $this->makeService($httpClient, 'https://api.payplug.com', $this->makeTokenManagerExpectingRefresh());
+
+        self::assertSame(['status' => 200, 'body' => '{}'], $service->createRefund('pay_123', 'acc_123', 'order_1', 'Refund for order order_1', 'sub_1'));
     }
 
     private function makeTokenManager(): TokenManager
