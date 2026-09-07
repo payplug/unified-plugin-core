@@ -108,9 +108,10 @@ running Docker daemon. The image builds automatically the first time any target 
   (PRE-3590, thrown by `PaymentDtoValidator` — `PaymentDto` has its own validation rules distinct
   from `HostedFieldDto`'s, so it gets its own exception type rather than reusing
   `InvalidHostedFieldException`), `OperationNotFoundException`, `InvalidRefundRequestException`
-  (PRE-3589, thrown by `createRefund()` when `orderId`/`description`/`submerchantExternalId` is
+  (PRE-3589, thrown by `createRefund()` when `orderId`/`description` is
   empty, checked locally before any HTTP call since `ApiException` only carries the HTTP status,
-  not which field the API's own response said was missing) — each
+  not which field the API's own response said was missing; `submerchantExternalId` was checked the
+  same way until 2026-09-04, when it became optional — see the `createRefund()` section below) — each
   a plain marker class extending `PayplugException` directly, with no custom constructor or
   properties, so CMS plugins can catch specific error types instead of a generic exception. Any
   future addition to this hierarchy should follow the same pattern: one class per file, no PHP
@@ -232,8 +233,17 @@ running Docker daemon. The image builds automatically the first time any target 
   already the exact `"billing"`/`"shipping"` body value, with no further wrapping needed by any
   caller. Matching tests in `tests/Dto/`.
   `CommonFieldsDto` holds the payment-creation fields common to every payment method —
-  `accountId`/`amount`/`currency`/`orderId`/`submerchantExternalId` as required constructor
-  parameters (`submerchantExternalId` added by PRE-3587 for marketplace/sub-merchant routing),
+  `accountId`/`amount`/`currency`/`orderId` as required constructor parameters, plus
+  `submerchantExternalId` as an optional nullable fifth one (added by PRE-3587 for
+  marketplace/sub-merchant routing; made optional on 2026-09-04, once it was established that the
+  field belongs to the UDV/MID configuration for the payment's *currency* — the EUR configurations
+  require one, the other-currency ones have none — rather than to any payment method. It stays a
+  constructor parameter rather than moving to a public property like the other optional fields
+  purely to keep existing positional 5-argument callers, notably the PrestaShop plugin's EUR flows,
+  working unchanged. `BuildsCommonPayloadBody` omits the key entirely when it is null **or an
+  empty string** — a CMS reading an unset value out of its own settings storage yields `''` far
+  more often than a real `null`, and `''` is rejected by the API just as a foreign submerchant is,
+  so the two are treated identically rather than only `null` being honored),
   `description`/`capture` (default `true`)/`descriptor`/`notificationUrl`/`extraData`/`billing`/
   `shipping`/`successUrl`/`cancelUrl` as public properties set by direct assignment after
   construction (`successUrl`/`cancelUrl` added to carry the 3DS/SCA challenge's redirect-return
@@ -583,8 +593,8 @@ running Docker daemon. The image builds automatically the first time any target 
   Everything else (401-retry, non-2xx handling) is inherited from `AbstractUnifiedApiService`
   unchanged. Matching unit test in `tests/Services/`.
   `UnifiedApiPaymentService` also exposes `createRefund(string $operationId, string $accountId,
-  string $orderId, string $description, string $submerchantExternalId, ?int $amount = null):
-  array{status: int, body: string}` (PRE-3589) — a full or partial refund of a payment, added as a
+  string $orderId, string $description, ?string $submerchantExternalId = null, ?int $amount = null,
+  ?string $currency = null): array{status: int, body: string}` (PRE-3589) — a full or partial refund of a payment, added as a
   method on this class (rather than a new `Services/` class) because the Unified API's own
   `createRefund` doc (`POST /v2/payments/{id}/refund`, confirmed against both the public GitBook
   OpenAPI schema and the team's own Confluence URL reference page) keys the refund by the payment's
@@ -629,14 +639,31 @@ running Docker daemon. The image builds automatically the first time any target 
   rule isn't duplicated client-side — only a `$amount` that's zero or negative is rejected up
   front, via `Assert::positive()`, throwing the existing `RefundAmountException` (present in the
   `Exceptions/` hierarchy since before this ticket, previously unused) before any HTTP call.
-  `$orderId`, `$description`, and `$submerchantExternalId` get the same local, fail-fast treatment
+  `$orderId` and `$description` get the same local, fail-fast treatment
   via `Assert::notEmpty()`, throwing the new `InvalidRefundRequestException` (13th subtype in the
   `Exceptions/` hierarchy) — added specifically because `ApiException` carries only the HTTP status
   code, not the API's response body, so an empty required field previously surfaced as an opaque
   `"Unified API refund request failed with HTTP status 400."` with no indication of which field was
   missing (exactly the ambiguity this same ticket's own debugging session hit before the real cause
-  was found). Request body: `{"account": {"id": $accountId}, "orderId": $orderId, "description": $description,
-  "submerchantExternalId": $submerchantExternalId}` plus `"amount"` only when non-null. Error
+  was found). Request body: `{"account": {"id": $accountId}, "orderId": $orderId, "description": $description}`
+  plus `"submerchantExternalId"` (only when non-null **and** non-empty, same reasoning as the
+  payment-creation path above), `"amount"` only when non-null, and `"currency"` only when non-null
+  and non-empty (an empty currency is never meaningful — it is folded into the already-supported
+  "omit and let the platform infer" mode rather than sent as `""`).
+
+  **`submerchantExternalId` and `currency` became optional on 2026-09-04**, correcting the
+  "required" conclusion recorded below. The field belongs to the UDV/MID configuration for the
+  payment's currency, not to a payment method: the EUR configurations require one, the ones used
+  for other currencies have none. That earlier probing only ever ran against EUR payments, whose
+  refund must indeed name the same submerchant; refunding a payment made under a non-EUR
+  configuration instead fails with 400 `"Invalid parameter."` when the key is sent and succeeds
+  when it is omitted. The rule is per-configuration, and a refund must mirror the payment it
+  refunds — which is what the nullable parameter now expresses. `currency` was never sent at all before that date,
+  so `amount`'s minor units travelled bare for the platform to interpret — unambiguous only while
+  every payment used the account's default currency, and a real gap for a multi-currency merchant.
+  Evidence caveat worth preserving: the staging run that first succeeded changed both fields at
+  once, so which of the two the earlier `"Invalid parameter."` referred to was never isolated.
+  Error
   handling mirrors `getPayment()` exactly (same resource, same id): a 404 throws
   `PaymentNotFoundException`, any other non-2xx throws `ApiException`; 401-retry and
   malformed-response handling are inherited from `AbstractUnifiedApiService` unchanged. The GitBook
@@ -652,7 +679,9 @@ running Docker daemon. The image builds automatically the first time any target 
   both snippets disagreed on or omitted (`currency`, `authentication`, `paymentMethod`) are still
   out of this ticket's scope, same YAGNI reasoning as `createPayment()`'s excluded fields (see
   below). Matching unit test in `tests/Services/`, plus an integration test in `tests/Integration/`
-  (requires the new `UPC_IT_SUBMERCHANT_ID` env var, see `.env.example`) — it cannot actually
+  (`UPC_IT_SUBMERCHANT_ID` is read from the environment but deliberately **not** in that test's
+  `requireEnv()` list, see `.env.example` — an unset value is a legitimate non-EUR run, not an
+  incomplete setup, so it passes `null` through rather than skipping the test) — it cannot actually
   complete a real refund against the suite's static `UPC_IT_PAYMENT_ID` fixture without breaking
   that same fixture's `'CAPTURED'` invariant relied on by `UnifiedApiPaymentServiceTest`'s own
   `getPayment()` test (a payment can only be refunded to zero once), so it instead drives a real

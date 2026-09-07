@@ -883,16 +883,114 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
         $service->createRefund('pay_123', 'acc_123', 'order_1', '', 'sub_1');
     }
 
-    public function testCreateRefundThrowsInvalidRefundRequestExceptionForAnEmptySubmerchantExternalIdBeforeAnyNetworkCall(): void
+    /**
+     * A payment made under a MID configuration that owns no submerchant (every non-EUR one today)
+     * must be refunded without one too — sending the key against such a payment is rejected with
+     * 400 ("Invalid parameter."), so it is omitted from the body entirely rather than sent as null.
+     */
+    public function testCreateRefundOmitsSubmerchantExternalIdFromTheBodyWhenNoneIsGiven(): void
     {
         $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
-        $httpClient->shouldNotReceive('postJson');
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(
+                'https://api.payplug.com/api/payment-gateway/payments/pay_123/refund',
+                [
+                    'account' => ['id' => 'acc_123'],
+                    'orderId' => 'order_1',
+                    'description' => 'Refund for order order_1',
+                ],
+                ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
+            )
+            ->andReturn(['status' => 200, 'body' => '{}']);
 
-        $service = $this->makeService($httpClient, 'https://api.payplug.com', $this->makeTokenManagerExpectingNoInteraction());
+        $service = $this->makeService($httpClient);
 
-        $this->expectException(InvalidRefundRequestException::class);
-        $this->expectExceptionMessage('submerchantExternalId must not be empty.');
-        $service->createRefund('pay_123', 'acc_123', 'order_1', 'Refund for order order_1', '');
+        self::assertSame(['status' => 200, 'body' => '{}'], $service->createRefund('pay_123', 'acc_123', 'order_1', 'Refund for order order_1'));
+    }
+
+    /**
+     * A CMS reading an unset submerchant out of its own settings storage hands back an empty
+     * string far more often than a real null — and until PRE-3589's Assert::notEmpty() was
+     * dropped, that empty string was a loud local error rather than something sent on the wire.
+     * It means the same thing as null (this configuration owns no submerchant), so it is omitted
+     * the same way rather than sent as "", which a non-EUR configuration rejects with 400
+     * ("Invalid parameter.").
+     */
+    public function testCreateRefundOmitsSubmerchantExternalIdFromTheBodyWhenItIsAnEmptyString(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(
+                'https://api.payplug.com/api/payment-gateway/payments/pay_123/refund',
+                [
+                    'account' => ['id' => 'acc_123'],
+                    'orderId' => 'order_1',
+                    'description' => 'Refund for order order_1',
+                ],
+                ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
+            )
+            ->andReturn(['status' => 200, 'body' => '{}']);
+
+        $service = $this->makeService($httpClient);
+
+        self::assertSame(['status' => 200, 'body' => '{}'], $service->createRefund('pay_123', 'acc_123', 'order_1', 'Refund for order order_1', ''));
+    }
+
+    /**
+     * Without this key the platform has to infer what $amount's minor units mean — unambiguous
+     * only while every payment is in the account's own default currency.
+     */
+    public function testCreateRefundIncludesCurrencyInTheBodyWhenGiven(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(
+                'https://api.payplug.com/api/payment-gateway/payments/pay_123/refund',
+                [
+                    'account' => ['id' => 'acc_123'],
+                    'orderId' => 'order_1',
+                    'description' => 'Refund for order order_1',
+                    'amount' => 6800,
+                    'currency' => 'USD',
+                ],
+                ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
+            )
+            ->andReturn(['status' => 200, 'body' => '{}']);
+
+        $service = $this->makeService($httpClient);
+
+        self::assertSame(['status' => 200, 'body' => '{}'], $service->createRefund('pay_123', 'acc_123', 'order_1', 'Refund for order order_1', null, 6800, 'USD'));
+    }
+
+    /**
+     * An empty currency is a caller that failed to resolve one, never a meaningful value. It is
+     * mapped onto the same "omit the key" behavior as null — which is itself a supported mode
+     * (the platform then interprets $amount's minor units against the account default) — rather
+     * than sent as "" for the API to reject.
+     */
+    public function testCreateRefundOmitsCurrencyFromTheBodyWhenItIsAnEmptyString(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(
+                'https://api.payplug.com/api/payment-gateway/payments/pay_123/refund',
+                [
+                    'account' => ['id' => 'acc_123'],
+                    'orderId' => 'order_1',
+                    'description' => 'Refund for order order_1',
+                    'amount' => 6800,
+                ],
+                ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
+            )
+            ->andReturn(['status' => 200, 'body' => '{}']);
+
+        $service = $this->makeService($httpClient);
+
+        self::assertSame(['status' => 200, 'body' => '{}'], $service->createRefund('pay_123', 'acc_123', 'order_1', 'Refund for order order_1', null, 6800, ''));
     }
 
     /**

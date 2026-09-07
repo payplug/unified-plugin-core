@@ -49,7 +49,16 @@ final class CommonFieldsDto
     /** @var string|null the end user is redirected here if they cancel the 3DS/SCA challenge */
     public $cancelUrl;
 
-    /** @var string */
+    /**
+     * @var string|null routing identifier carried by a PayPlug UDV/MID configuration. It belongs to
+     *      the *currency* the payment is made in, not to any particular payment method: the EUR MID
+     *      configurations require one today, while the configurations used for other currencies
+     *      have none at all. Optional for that reason — sent to the Unified API only when a CMS
+     *      actually supplies one (unlike $description, which is always sent), so a multi-currency
+     *      caller can omit it while an EUR caller keeps sending it. An empty string is treated as
+     *      "none" exactly like null: a CMS reading an unset value out of its own settings storage
+     *      yields '' far more often than a real null, and sending '' is rejected by the API too.
+     */
     public $submerchantExternalId;
 
     /** @var BillingDto|null nested under the body's "billing" key when set */
@@ -58,7 +67,7 @@ final class CommonFieldsDto
     /** @var ShippingDto|null nested under the body's "shipping" key when set */
     public $shipping;
 
-    public function __construct(string $accountId, int $amount, string $currency, string $orderId, string $submerchantExternalId)
+    public function __construct(string $accountId, int $amount, string $currency, string $orderId, ?string $submerchantExternalId = null)
     {
         $this->accountId = $accountId;
         $this->amount = $amount;
