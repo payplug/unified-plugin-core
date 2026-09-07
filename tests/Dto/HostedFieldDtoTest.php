@@ -121,6 +121,42 @@ final class HostedFieldDtoTest extends TestCase
         ], $dto->createPayloadBody());
     }
 
+    /**
+     * A non-EUR MID configuration carries no submerchant to name. Unlike `description`, which is
+     * sent even as null, the key is left out of the body entirely — and the surrounding keys keep
+     * their usual order.
+     */
+    public function testCreatePayloadBodyOmitsSubmerchantExternalIdWhenNoneIsProvided(): void
+    {
+        $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456'), 'hf_abc');
+
+        $body = $dto->createPayloadBody();
+
+        self::assertArrayNotHasKey('submerchantExternalId', $body);
+        self::assertSame([
+            'account' => ['id' => 'acc_123'],
+            'amount' => 1000,
+            'currency' => 'EUR',
+            'orderId' => 'order_456',
+            'description' => null,
+            'capture' => true,
+            'hfToken' => 'hf_abc',
+        ], $body);
+    }
+
+    /**
+     * A CMS reading an unset submerchant out of its own settings storage hands back an empty
+     * string far more often than a real null. That is still "this configuration owns no
+     * submerchant", so it must be omitted exactly like null rather than sent as "" — which the
+     * Unified API rejects with 400 ("Invalid parameter.") against a non-EUR configuration.
+     */
+    public function testCreatePayloadBodyOmitsSubmerchantExternalIdWhenItIsAnEmptyString(): void
+    {
+        $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', ''), 'hf_abc');
+
+        self::assertArrayNotHasKey('submerchantExternalId', $dto->createPayloadBody());
+    }
+
     public function testCreatePayloadBodyIncludesBillingAloneWhenOnlyBillingIsProvided(): void
     {
         $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789');

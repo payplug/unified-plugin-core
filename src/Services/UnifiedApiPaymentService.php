@@ -213,26 +213,43 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
      * so that's the parameter name used here rather than introducing a second name for the same
      * value. Omitting $amount refunds the payment's full remaining amount; the Unified API itself
      * rejects an amount exceeding what was captured, so that check isn't duplicated here.
-     * $orderId, $description, and $submerchantExternalId are all required — confirmed against the
-     * real staging API (2026-08-27) by probing each field's absence individually, not merely the
-     * GitBook doc: a body carrying only $orderId is rejected with 400
-     * ("The parameter \"description\" is missing."), a body carrying only $description is
-     * rejected with 400 ("The parameter \"orderId\" is missing."), and a body carrying both but no
-     * $submerchantExternalId is rejected with 400 ("The parameter \"subMerchantExternalId\" is
-     * missing.") — despite that error text's capitalization, the field the API actually validates
-     * on is the same lower-case "submerchantExternalId" key HostedFieldDto::createPayloadBody()
-     * already sends at payment-creation time (confirmed empirically: the capitalized key from the
-     * error message itself does not satisfy the check, but this lower-case key does), so no new
-     * casing convention is introduced. This corrects this method's own prior design-time
-     * assumption (recorded here until PRE-3552's real-environment testing on 2026-08-27 corrected
-     * it) that $orderId alone satisfied an "at least one of the two" requirement — the true
-     * requirement is all three fields together, at least for a submerchant-routed account.
+     * $orderId and $description are both required — confirmed against the real staging API
+     * (2026-08-27) by probing each field's absence individually, not merely the GitBook doc: a body
+     * carrying only $orderId is rejected with 400 ("The parameter \"description\" is missing."),
+     * and a body carrying only $description is rejected with 400 ("The parameter \"orderId\" is
+     * missing.").
+     *
+     * $submerchantExternalId is optional and sent only when non-null and non-empty (a CMS reading
+     * an unset value out of its own settings storage yields '' far more often than a real null,
+     * and '' is rejected by the API just as a foreign submerchant is). It is a property of the
+     * PayPlug UDV/MID configuration for the payment's *currency*, not of any payment method: the
+     * EUR configurations require one, the ones used for other currencies have none. That same
+     * 2026-08-27 probing concluded the field was universally required — a body carrying $orderId
+     * and $description but no $submerchantExternalId was rejected with 400 ("The parameter
+     * \"subMerchantExternalId\" is missing.") — but it only ever ran against EUR payments, whose
+     * configuration does own a submerchant and whose refund therefore has to name the same one.
+     * Refunding a payment made under a non-EUR configuration instead fails with 400 ("Invalid
+     * parameter.") when the key is sent, and succeeds when it is omitted (staging, 2026-09-04).
+     * So the rule is per-configuration, and the refund must mirror the payment it refunds — which
+     * is what "optional, mirroring CommonFieldsDto" now expresses. When it is sent, the API
+     * validates the lower-case "submerchantExternalId" key despite its own error text capitalizing
+     * it (confirmed empirically: the capitalized key does not satisfy the check).
+     *
+     * $currency is likewise optional and sent only when non-null and non-empty. The endpoint
+     * carried no currency at all before 2026-09-04, so an $amount travelled bare and the platform
+     * had to infer what those minor units meant — harmless while every payment was EUR, but
+     * ambiguous for a multi-currency merchant. Unlike $submerchantExternalId, an empty string here
+     * is never a meaningful value (every payment has a currency); it is treated as null purely so
+     * a caller that failed to resolve one falls back to that same already-supported "let the
+     * platform infer" mode instead of putting "" on the wire for the API to reject. Caveat on the evidence: the 2026-09-04 staging run that first
+     * succeeded changed both this and $submerchantExternalId at once, so which of the two the
+     * earlier "Invalid parameter." referred to was never isolated.
      *
      * @return array{status: int, body: string}
-     * @throws InvalidRefundRequestException if $orderId, $description, or $submerchantExternalId
-     *                                       is empty — checked locally before any HTTP call, since
-     *                                       ApiException carries only the HTTP status, not the
-     *                                       API's own response body naming which field was missing.
+     * @throws InvalidRefundRequestException if $orderId or $description is empty — checked locally
+     *                                       before any HTTP call, since ApiException carries only
+     *                                       the HTTP status, not the API's own response body
+     *                                       naming which field was missing.
      * @throws RefundAmountException if $amount is given and is zero or negative
      * @throws PaymentNotFoundException if the Unified API has no payment with that id (HTTP 404).
      *                                  A sibling of ApiException, not a subclass — catching
@@ -246,12 +263,12 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
         string $accountId,
         string $orderId,
         string $description,
-        string $submerchantExternalId,
-        ?int $amount = null
+        ?string $submerchantExternalId = null,
+        ?int $amount = null,
+        ?string $currency = null
     ): array {
         Assert::notEmpty($orderId, 'orderId', InvalidRefundRequestException::class);
         Assert::notEmpty($description, 'description', InvalidRefundRequestException::class);
-        Assert::notEmpty($submerchantExternalId, 'submerchantExternalId', InvalidRefundRequestException::class);
 
         if ($amount !== null) {
             Assert::positive($amount, 'amount', RefundAmountException::class);
@@ -263,11 +280,18 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
             'account' => ['id' => $accountId],
             'orderId' => $orderId,
             'description' => $description,
-            'submerchantExternalId' => $submerchantExternalId,
         ];
+
+        if ($submerchantExternalId !== null && $submerchantExternalId !== '') {
+            $body['submerchantExternalId'] = $submerchantExternalId;
+        }
 
         if ($amount !== null) {
             $body['amount'] = $amount;
+        }
+
+        if ($currency !== null && $currency !== '') {
+            $body['currency'] = $currency;
         }
 
         $response = $this->sendPostJson($url, $body);

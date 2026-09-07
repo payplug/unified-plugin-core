@@ -147,12 +147,17 @@ final class UnifiedApiPaymentServiceTest extends TestCase
             'UPC_IT_UNIFIED_API_BASE_URL',
             'UPC_IT_ACCOUNT_ID',
             'UPC_IT_PAYMENT_ID',
-            'UPC_IT_SUBMERCHANT_ID',
         ]);
 
         if ($env === null) {
             return;
         }
+
+        // Deliberately not part of requireEnv() above: only a MID configuration that owns a
+        // submerchant has one to name, so an unset value is a legitimate non-EUR run rather than
+        // an incomplete setup, and skipping the whole test over it would make the refund path
+        // unrunnable for exactly the configuration this parameter was made optional for.
+        $submerchantExternalId = getenv('UPC_IT_SUBMERCHANT_ID');
 
         $httpClient = new CurlHttpClient();
         $oauth2Client = new OAuth2Client(
@@ -178,7 +183,7 @@ final class UnifiedApiPaymentServiceTest extends TestCase
                 $env['UPC_IT_ACCOUNT_ID'],
                 'upc-it-refund-test',
                 'UPC integration test refund',
-                $env['UPC_IT_SUBMERCHANT_ID'],
+                $submerchantExternalId === false ? null : $submerchantExternalId,
                 999999999
             );
             self::fail('Expected the Unified API to reject a refund amount larger than the payment.');
