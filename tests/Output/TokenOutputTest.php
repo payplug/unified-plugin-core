@@ -19,6 +19,29 @@ final class TokenOutputTest extends TestCase
         self::assertSame('Bearer', $token->tokenType);
     }
 
+    public function testConstructorAssignsTheOptionalIdToken(): void
+    {
+        $token = new TokenOutput('jwt-access-token', 3600, 'Bearer', 'jwt-id-token');
+
+        self::assertSame('jwt-id-token', $token->idToken);
+    }
+
+    public function testIdTokenIsNullWhenNotSupplied(): void
+    {
+        $token = new TokenOutput('jwt-access-token', 3600, 'Bearer');
+
+        self::assertNull($token->idToken);
+    }
+
+    public function testConstructorDoesNotValidateTheIdToken(): void
+    {
+        // The id_token is display-only metadata a grant may legitimately omit, so an empty one must
+        // not invalidate an otherwise usable token response.
+        $token = new TokenOutput('jwt-access-token', 3600, 'Bearer', '');
+
+        self::assertSame('', $token->idToken);
+    }
+
     public function testConstructorThrowsWhenAccessTokenIsEmpty(): void
     {
         $this->expectException(InvalidTokenException::class);
