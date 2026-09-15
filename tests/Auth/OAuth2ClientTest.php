@@ -143,6 +143,58 @@ final class OAuth2ClientTest extends MockeryTestCase
         self::assertSame('Bearer', $token->tokenType);
     }
 
+    public function testExchangeAuthorizationCodeExposesTheIdTokenFromTheResponse(): void
+    {
+        $httpClient = Mockery::mock(IOAuthHttpClient::class);
+        $httpClient->shouldReceive('post')->once()->andReturn([
+            'status' => 200,
+            'body' => json_encode([
+                'access_token' => 'jwt-token',
+                'expires_in' => 3600,
+                'token_type' => 'Bearer',
+                'id_token' => 'jwt-id-token',
+            ]),
+        ]);
+
+        $client = new OAuth2Client($httpClient, 'https://api-qa.payplug.com', 'https://merchant.example.com/callback', 'openid email', 'https://www.payplug.com');
+
+        $token = $client->exchangeAuthorizationCode('client_abc', 'auth_code_123', 'verifier_123');
+
+        self::assertSame('jwt-id-token', $token->idToken);
+    }
+
+    public function testExchangeAuthorizationCodeLeavesTheIdTokenNullWhenTheResponseOmitsIt(): void
+    {
+        $httpClient = Mockery::mock(IOAuthHttpClient::class);
+        $httpClient->shouldReceive('post')->once()->andReturn([
+            'status' => 200,
+            'body' => json_encode(['access_token' => 'jwt-token', 'expires_in' => 3600, 'token_type' => 'Bearer']),
+        ]);
+
+        $client = new OAuth2Client($httpClient, 'https://api-qa.payplug.com', 'https://merchant.example.com/callback', 'payments', 'https://www.payplug.com');
+
+        $token = $client->exchangeAuthorizationCode('client_abc', 'auth_code_123', 'verifier_123');
+
+        self::assertNull($token->idToken);
+    }
+
+    public function testGetClientCredentialsTokenLeavesTheIdTokenNull(): void
+    {
+        // client_credentials authenticates a machine, not a person, so the identity provider has no
+        // id_token to issue for it — the grant must stay usable without one.
+        $httpClient = Mockery::mock(IOAuthHttpClient::class);
+        $httpClient->shouldReceive('post')->once()->andReturn([
+            'status' => 200,
+            'body' => json_encode(['access_token' => 'jwt-token-2', 'expires_in' => 300, 'token_type' => 'Bearer']),
+        ]);
+
+        $client = new OAuth2Client($httpClient, 'https://api-qa.payplug.com', 'https://merchant.example.com/callback', 'payments', 'https://www.payplug.com');
+
+        $token = $client->getClientCredentialsToken('client_abc', 'secret_xyz');
+
+        self::assertNull($token->idToken);
+    }
+
     public function testGetClientCredentialsTokenThrowsApiExceptionOnNon2xxStatus(): void
     {
         $httpClient = Mockery::mock(IOAuthHttpClient::class);

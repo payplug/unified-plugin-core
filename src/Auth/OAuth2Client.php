@@ -129,8 +129,13 @@ final class OAuth2Client
             throw new ApiException('OAuth2 token response is malformed.');
         }
 
+        // `id_token` is read but never required: only the authorization-code grant requested with
+        // the `openid` scope returns one, and treating its absence as a malformed response would
+        // break the client_credentials grant this same method serves.
+        $idToken = isset($data['id_token']) && \is_string($data['id_token']) ? $data['id_token'] : null;
+
         try {
-            return new TokenOutput((string) $data['access_token'], (int) $data['expires_in'], (string) $data['token_type']);
+            return new TokenOutput((string) $data['access_token'], (int) $data['expires_in'], (string) $data['token_type'], $idToken);
         } catch (InvalidTokenException $e) {
             throw new ApiException('OAuth2 token response is malformed.', 0, $e);
         }
