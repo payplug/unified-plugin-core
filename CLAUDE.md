@@ -150,10 +150,20 @@ running Docker daemon. The image builds automatically the first time any target 
   constructor itself validates varies by class, unlike a hard category rule: `TokenOutput`
   (PRE-3563, named `Token` before this ticket's `DataValues/`/`Output/` split) is the validating
   value object for a freshly-minted OAuth2 token response (`accessToken`, `expiresIn`, `tokenType`,
-  each with a `/** @var */` docblock), constructed only from data that has already crossed UPC's
-  external boundary (an OAuth2 token-endpoint response) — its constructor rejects an empty
-  `accessToken`/`tokenType` or a non-positive `expiresIn`, throwing the new `InvalidTokenException`
-  (7th subtype in the `Exceptions/` hierarchy). `AuthorizationRequestOutput` (PRE-3563, named
+  and since PRE-3631 a nullable `idToken`, each with a `/** @var */` docblock), constructed only
+  from data that has already crossed UPC's external boundary (an OAuth2 token-endpoint response) —
+  its constructor rejects an empty `accessToken`/`tokenType` or a non-positive `expiresIn`,
+  throwing the new `InvalidTokenException` (7th subtype in the `Exceptions/` hierarchy).
+  `idToken` is the deliberate exception to that validation: it is the OpenID Connect ID token,
+  which only an authorization-code exchange requested with the `openid` scope returns, and it is
+  the *only* place a logged-in person's identity (their email, via the `email` claim) surfaces —
+  an access token authorizes an account without naming a user. Because the client_credentials
+  grant authenticates a machine and never carries one, `idToken` is a 4th constructor argument
+  defaulting to `null` and is asserted on by nothing; requiring it would reject a perfectly usable
+  client-credentials response, and the 4th-argument-with-default shape keeps every pre-PRE-3631
+  caller source-compatible. Added for the Sylius plugin's PRE-3631, which displays the connected
+  PayPlug account's email on its gateway-configuration admin screen; consumers decode the claim
+  themselves, UPC does not parse the JWT. `AuthorizationRequestOutput` (PRE-3563, named
   `AuthorizationRequest` before the split) is the output of `OAuth2Client::buildAuthorizationUrl()`
   (`url`, `state`, `codeVerifier`) — unlike `TokenOutput`, its constructor holds no validation at
   all, since it's produced entirely internally by `OAuth2Client` and never itself reflects an
@@ -517,7 +527,9 @@ running Docker daemon. The image builds automatically the first time any target 
   TokenOutput` and `getClientCredentialsToken(string $clientId, string $clientSecret):
   TokenOutput` both POST
   via the injected `IOAuthHttpClient` and throw the existing `ApiException` on a non-2xx response
-  or a malformed body. The constructor takes `IOAuthHttpClient $httpClient, string $baseUrl,
+  or a malformed body. Both run through the same private `requestToken()`, which reads `id_token`
+  off the response when present and passes it to `TokenOutput` — never required, since that one
+  method serves both grants and only the authorization-code one can produce it (PRE-3631). The constructor takes `IOAuthHttpClient $httpClient, string $baseUrl,
   string $redirectUri, string $scope, string $audience` — only the two *resource paths*
   (`/oauth2/auth`, `/oauth2/token`) are `private const`s on the class; `$baseUrl` is a plain
   constructor argument, replacing the legacy SDK's pattern of a hardcoded base-URL constant
