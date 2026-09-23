@@ -67,6 +67,12 @@ final class CommonFieldsDto
     /** @var ShippingDto|null nested under the body's "shipping" key when set */
     public $shipping;
 
+    /** @var bool|null lets the issuer approve less than $amount; only meaningful alongside $capture === false */
+    public $partialAuthorization;
+
+    /** @var string|null one of AuthorizationType's constants; only meaningful alongside $capture === false */
+    public $authorizationType;
+
     public function __construct(string $accountId, int $amount, string $currency, string $orderId, ?string $submerchantExternalId = null)
     {
         $this->accountId = $accountId;

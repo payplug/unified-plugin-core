@@ -27,6 +27,9 @@ namespace PayplugUnifiedCore\Output;
  * aliasId (PRE-3590) carries the Unified API's paymentMethod.id from the response — the alias that
  * was just created (hfToken + paymentMethod.saveFutureUsage) or reused (aliasId-based payment).
  * null when the operation didn't involve an alias at all.
+ *
+ * maxCaptureDate/remainingCapturableAmount: only set for an authorization-only creation
+ * (capture === false).
  */
 final class PaymentOutput
 {
@@ -45,12 +48,27 @@ final class PaymentOutput
     /** @var string|null */
     public $aliasId;
 
-    public function __construct(int $status, string $body, ?string $redirectUrl, ?string $redirectHtml, ?string $aliasId)
-    {
+    /** @var string|null ISO-8601 date-time deadline by which an authorization must be captured */
+    public $maxCaptureDate;
+
+    /** @var int|null in cents; null when the response carries no requestedAmount/amount pair */
+    public $remainingCapturableAmount;
+
+    public function __construct(
+        int $status,
+        string $body,
+        ?string $redirectUrl,
+        ?string $redirectHtml,
+        ?string $aliasId,
+        ?string $maxCaptureDate = null,
+        ?int $remainingCapturableAmount = null
+    ) {
         $this->status = $status;
         $this->body = $body;
         $this->redirectUrl = $redirectUrl;
         $this->redirectHtml = $redirectHtml;
         $this->aliasId = $aliasId;
+        $this->maxCaptureDate = $maxCaptureDate;
+        $this->remainingCapturableAmount = $remainingCapturableAmount;
     }
 }
