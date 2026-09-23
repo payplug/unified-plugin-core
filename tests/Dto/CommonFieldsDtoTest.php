@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PayplugUnifiedCore\Tests\Dto;
 
+use PayplugUnifiedCore\DataValues\AuthorizationType;
 use PayplugUnifiedCore\Dto\BillingDto;
 use PayplugUnifiedCore\Dto\CommonFieldsDto;
 use PayplugUnifiedCore\Dto\ShippingDto;
@@ -33,6 +34,8 @@ final class CommonFieldsDtoTest extends TestCase
         self::assertNull($common->extraData);
         self::assertNull($common->billing);
         self::assertNull($common->shipping);
+        self::assertNull($common->partialAuthorization);
+        self::assertNull($common->authorizationType);
     }
 
     public function testOptionalPropertiesAreSettableAfterConstruction(): void
@@ -49,6 +52,8 @@ final class CommonFieldsDtoTest extends TestCase
         $common->extraData = 'internal_ref_789';
         $common->billing = $billing;
         $common->shipping = $shipping;
+        $common->partialAuthorization = true;
+        $common->authorizationType = AuthorizationType::FINAL_AUTHORIZATION;
 
         self::assertSame('Order #456', $common->description);
         self::assertFalse($common->capture);
@@ -57,5 +62,7 @@ final class CommonFieldsDtoTest extends TestCase
         self::assertSame('internal_ref_789', $common->extraData);
         self::assertSame($billing, $common->billing);
         self::assertSame($shipping, $common->shipping);
+        self::assertTrue($common->partialAuthorization);
+        self::assertSame(AuthorizationType::FINAL_AUTHORIZATION, $common->authorizationType);
     }
 }
