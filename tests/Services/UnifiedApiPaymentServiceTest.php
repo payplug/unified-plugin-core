@@ -14,12 +14,28 @@ use PayplugUnifiedCore\Contracts\IUnifiedApiHttpClient;
 use PayplugUnifiedCore\Contracts\PaymentRequestPayload;
 use PayplugUnifiedCore\Dto\BrowserDto;
 use PayplugUnifiedCore\Dto\CustomerDto;
+use PayplugUnifiedCore\Exceptions\AmountExceedsAvailableException;
 use PayplugUnifiedCore\Exceptions\ApiException;
+use PayplugUnifiedCore\Exceptions\AuthorizationExpiredException;
+use PayplugUnifiedCore\Exceptions\CancellationAmountException;
+use PayplugUnifiedCore\Exceptions\CaptureAmountException;
+use PayplugUnifiedCore\Exceptions\CardOperationException;
+use PayplugUnifiedCore\Exceptions\InvalidCancellationRequestException;
+use PayplugUnifiedCore\Exceptions\InvalidCaptureRequestException;
 use PayplugUnifiedCore\Exceptions\InvalidHostedFieldException;
 use PayplugUnifiedCore\Exceptions\InvalidPaymentException;
 use PayplugUnifiedCore\Exceptions\InvalidRefundRequestException;
+use PayplugUnifiedCore\Exceptions\MultipleCaptureNotAllowedException;
+use PayplugUnifiedCore\Exceptions\OperationConflictException;
+use PayplugUnifiedCore\Exceptions\PartialCancellationNotAllowedException;
+use PayplugUnifiedCore\Exceptions\PaymentAlreadyCancelledException;
+use PayplugUnifiedCore\Exceptions\PaymentAlreadyCapturedException;
+use PayplugUnifiedCore\Exceptions\PaymentNotCapturableException;
 use PayplugUnifiedCore\Exceptions\PaymentNotFoundException;
+use PayplugUnifiedCore\Exceptions\PaymentNotVoidableException;
 use PayplugUnifiedCore\Exceptions\RefundAmountException;
+use PayplugUnifiedCore\Output\CancellationOutput;
+use PayplugUnifiedCore\Output\CaptureOutput;
 use PayplugUnifiedCore\Output\PaymentOutput;
 use PayplugUnifiedCore\Services\UnifiedApiPaymentService;
 use PayplugUnifiedCore\Tests\Support\HostedFieldDtoBuilder;
@@ -592,6 +608,61 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
         self::assertNull($result->aliasId);
     }
 
+    public function testCreatePaymentExtractsMaxCaptureDateAndRemainingCapturableAmountForAnAuthorizationOnlyPayment(): void
+    {
+        $body = json_encode(['id' => 'pay_123', 'requestedAmount' => 1000, 'maxCaptureDate' => '2026-09-25T12:00:00Z']);
+
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 200, 'body' => $body]);
+
+        $service = $this->makeService($httpClient);
+
+        $dto = HostedFieldDtoBuilder::valid()->build();
+        $dto->common->capture = false;
+
+        $result = $service->createPayment($dto);
+
+        self::assertSame('2026-09-25T12:00:00Z', $result->maxCaptureDate);
+        self::assertSame(1000, $result->remainingCapturableAmount);
+    }
+
+    /**
+     * A partial-authorization response (the issuer approved less than requested) carries a lower
+     * "amount" than "requestedAmount" — remainingCapturableAmount must reflect what was actually
+     * authorized ("amount"), not what was originally asked for ("requestedAmount").
+     */
+    public function testCreatePaymentPrioritizesAmountOverRequestedAmountForRemainingCapturableAmount(): void
+    {
+        $body = json_encode(['id' => 'pay_123', 'amount' => 700, 'requestedAmount' => 1000]);
+
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 200, 'body' => $body]);
+
+        $service = $this->makeService($httpClient);
+
+        $dto = HostedFieldDtoBuilder::valid()->build();
+        $dto->common->capture = false;
+
+        $result = $service->createPayment($dto);
+
+        self::assertSame(700, $result->remainingCapturableAmount);
+    }
+
+    public function testCreatePaymentLeavesRemainingCapturableAmountNullForADirectPayment(): void
+    {
+        $body = json_encode(['id' => 'pay_123', 'requestedAmount' => 1000, 'amount' => 1000]);
+
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 200, 'body' => $body]);
+
+        $service = $this->makeService($httpClient);
+
+        // HostedFieldDtoBuilder::valid() defaults to capture=true (a direct payment).
+        $result = $service->createPayment(HostedFieldDtoBuilder::valid()->build());
+
+        self::assertNull($result->remainingCapturableAmount);
+    }
+
     public function testCreatePaymentSendsAPaymentDtosPayloadBodyWithNoHfToken(): void
     {
         $dto = PaymentDtoBuilder::valid()->build();
@@ -1062,6 +1133,629 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
         $service = $this->makeService($httpClient, 'https://api.payplug.com', $this->makeTokenManagerExpectingRefresh());
 
         self::assertSame(['status' => 200, 'body' => '{}'], $service->createRefund('pay_123', 'acc_123', 'order_1', 'Refund for order order_1', 'sub_1'));
+    }
+
+    public function testCapturePaymentSendsAccountIdAndOrderIdAndReturnsOutputOnAFullCapture(): void
+    {
+        $body = json_encode(['id' => 'pay_123', 'amount' => 1000, 'requestedAmount' => 1000]);
+
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(
+                'https://api.payplug.com/api/payment-gateway/payments/pay_123/capture',
+                [
+                    'account' => ['id' => 'acc_123'],
+                    'orderId' => 'order_1',
+                    'description' => 'Capture for order order_1',
+                ],
+                ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
+            )
+            ->andReturn(['status' => 200, 'body' => $body]);
+
+        $service = $this->makeService($httpClient);
+
+        $result = $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1');
+
+        // @phpstan-ignore-next-line staticMethod.alreadyNarrowedType (kept as a regression guard, not removed)
+        self::assertInstanceOf(CaptureOutput::class, $result);
+        self::assertSame(200, $result->status);
+        self::assertSame($body, $result->body);
+        self::assertSame(1000, $result->capturedAmount);
+        self::assertSame(1000, $result->requestedAmount);
+        self::assertSame(0, $result->remainingCapturableAmount);
+    }
+
+    public function testCapturePaymentIncludesAmountInTheBodyForAPartialCapture(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(
+                'https://api.payplug.com/api/payment-gateway/payments/pay_123/capture',
+                [
+                    'account' => ['id' => 'acc_123'],
+                    'orderId' => 'order_1',
+                    'description' => 'Capture for order order_1',
+                    'amount' => 300,
+                ],
+                ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
+            )
+            ->andReturn(['status' => 200, 'body' => json_encode(['amount' => 300, 'requestedAmount' => 1000])]);
+
+        $service = $this->makeService($httpClient);
+
+        $result = $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1', 300);
+
+        self::assertSame(300, $result->capturedAmount);
+        self::assertSame(700, $result->remainingCapturableAmount);
+    }
+
+    public function testCapturePaymentIncludesCurrencyInTheBodyWhenGiven(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(
+                'https://api.payplug.com/api/payment-gateway/payments/pay_123/capture',
+                [
+                    'account' => ['id' => 'acc_123'],
+                    'orderId' => 'order_1',
+                    'description' => 'Capture for order order_1',
+                    'amount' => 300,
+                    'currency' => 'USD',
+                ],
+                ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
+            )
+            ->andReturn(['status' => 200, 'body' => '{}']);
+
+        $service = $this->makeService($httpClient);
+
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1', 300, null, 'USD');
+    }
+
+    public function testCapturePaymentOmitsCurrencyFromTheBodyWhenItIsAnEmptyString(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(
+                'https://api.payplug.com/api/payment-gateway/payments/pay_123/capture',
+                [
+                    'account' => ['id' => 'acc_123'],
+                    'orderId' => 'order_1',
+                    'description' => 'Capture for order order_1',
+                    'amount' => 300,
+                ],
+                ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
+            )
+            ->andReturn(['status' => 200, 'body' => '{}']);
+
+        $service = $this->makeService($httpClient);
+
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1', 300, null, '');
+    }
+
+    public function testCapturePaymentIncludesExtraDataWhenGiven(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(
+                'https://api.payplug.com/api/payment-gateway/payments/pay_123/capture',
+                [
+                    'account' => ['id' => 'acc_123'],
+                    'orderId' => 'order_1',
+                    'description' => 'Capture for order order_1',
+                    'extraData' => 'internal_ref_789',
+                ],
+                ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
+            )
+            ->andReturn(['status' => 200, 'body' => '{}']);
+
+        $service = $this->makeService($httpClient);
+
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1', null, 'internal_ref_789');
+    }
+
+    public function testCapturePaymentUrlEncodesThePaymentId(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(
+                'https://api.payplug.com/api/payment-gateway/payments/pay%2F123%20456/capture',
+                Mockery::any(),
+                Mockery::any()
+            )
+            ->andReturn(['status' => 200, 'body' => '{}']);
+
+        $service = $this->makeService($httpClient);
+
+        $service->capturePayment('pay/123 456', 'acc_123', 'order_1', 'Capture for order order_1');
+    }
+
+    public function testCapturePaymentExtractsMaxCaptureDate(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 200, 'body' => json_encode(['maxCaptureDate' => '2026-09-25T12:00:00Z'])]);
+
+        $service = $this->makeService($httpClient);
+
+        $result = $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1');
+
+        self::assertSame('2026-09-25T12:00:00Z', $result->maxCaptureDate);
+    }
+
+    public function testCapturePaymentThrowsInvalidCaptureRequestExceptionForAnEmptyOrderIdBeforeAnyNetworkCall(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldNotReceive('postJson');
+
+        $service = $this->makeService($httpClient, 'https://api.payplug.com', $this->makeTokenManagerExpectingNoInteraction());
+
+        $this->expectException(InvalidCaptureRequestException::class);
+        $this->expectExceptionMessage('orderId must not be empty.');
+        $service->capturePayment('pay_123', 'acc_123', '', 'Capture for order order_1');
+    }
+
+    public function testCapturePaymentThrowsInvalidCaptureRequestExceptionForAnEmptyDescriptionBeforeAnyNetworkCall(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldNotReceive('postJson');
+
+        $service = $this->makeService($httpClient, 'https://api.payplug.com', $this->makeTokenManagerExpectingNoInteraction());
+
+        $this->expectException(InvalidCaptureRequestException::class);
+        $this->expectExceptionMessage('description must not be empty.');
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', '');
+    }
+
+    /**
+     * @dataProvider nonPositiveAmountProvider
+     */
+    public function testCapturePaymentThrowsCaptureAmountExceptionForANonPositiveAmountBeforeAnyNetworkCall(int $amount): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldNotReceive('postJson');
+
+        $service = $this->makeService($httpClient, 'https://api.payplug.com', $this->makeTokenManagerExpectingNoInteraction());
+
+        $this->expectException(CaptureAmountException::class);
+        $this->expectExceptionMessage('amount must be greater than zero.');
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1', $amount);
+    }
+
+    public function testCapturePaymentThrowsPaymentNotFoundExceptionOnA404(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 404, 'body' => '{}']);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(PaymentNotFoundException::class);
+        $this->expectExceptionMessage('Unified API has no payment "pay_123".');
+        $this->expectExceptionCode(404);
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1');
+    }
+
+    public function testCapturePaymentThrowsOperationConflictExceptionOnA409(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 409, 'body' => '{}']);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(OperationConflictException::class);
+        $this->expectExceptionCode(409);
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1');
+    }
+
+    public function testCapturePaymentThrowsCardOperationExceptionForAnIssuerRefusalExecCode(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 400, 'body' => json_encode(['execCode' => '4001', 'message' => 'Card declined by issuer.'])]);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(CardOperationException::class);
+        $this->expectExceptionMessage('Card declined by issuer.');
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1');
+    }
+
+    public function testCapturePaymentThrowsAuthorizationExpiredExceptionWhenTheMessageIndicatesExpiry(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 400, 'body' => json_encode(['message' => 'The authorization has expired.'])]);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(AuthorizationExpiredException::class);
+        $this->expectExceptionMessage('The authorization has expired.');
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1');
+    }
+
+    public function testCapturePaymentThrowsPaymentAlreadyCapturedExceptionWhenTheMessageIndicatesAlreadyCaptured(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 400, 'body' => json_encode(['message' => 'This payment has already been captured.'])]);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(PaymentAlreadyCapturedException::class);
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1');
+    }
+
+    public function testCapturePaymentThrowsPaymentNotCapturableExceptionWhenTheMessageIndicatesNotCapturable(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 400, 'body' => json_encode(['errorCategory' => 'RESSOURCE_ERROR', 'message' => 'Reference authorization not capturable.'])]);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(PaymentNotCapturableException::class);
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1', 500);
+    }
+
+    public function testCapturePaymentThrowsAmountExceedsAvailableExceptionWhenTheMessageIndicatesExceedingAmount(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 400, 'body' => json_encode(['message' => 'The amount exceeds the amount still available.'])]);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(AmountExceedsAvailableException::class);
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1', 500);
+    }
+
+    public function testCapturePaymentThrowsApiExceptionOnNonSuccessStatusWithNoRecognizedSignal(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 500, 'body' => '{"message":"boom"}']);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(ApiException::class);
+        $this->expectExceptionMessage('Unified API capture request for payment "pay_123" failed with HTTP status 500.');
+        $this->expectExceptionCode(500);
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1');
+    }
+
+    /**
+     * A 2xx HTTP status alone does not mean the operation succeeded: the Unified API can return
+     * HTTP 200 with a non-"0000" execCode for a capture an authorization does not allow more than
+     * one of, which must still be treated as a failure rather than returned to the caller as a
+     * successful CaptureOutput.
+     */
+    public function testCapturePaymentThrowsMultipleCaptureNotAllowedExceptionWhenA200ResponseSignalsADuplicateExecCode(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 200, 'body' => json_encode(['execCode' => '4011', 'message' => 'Duplicate request.'])]);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(MultipleCaptureNotAllowedException::class);
+        $this->expectExceptionMessage('Duplicate request.');
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1');
+    }
+
+    public function testCapturePaymentThrowsApiExceptionWhenA200ResponseHasANonSuccessExecCodeWithNoRecognizedMessage(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 200, 'body' => json_encode(['execCode' => '5000', 'message' => 'Unexpected system error.'])]);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(ApiException::class);
+        $this->expectExceptionMessage('Unified API capture request for payment "pay_123" failed with HTTP status 200 (execCode "5000").');
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1');
+    }
+
+    public function testCapturePaymentRetriesOnceWithAFreshTokenWhenTheCachedOneIsRejected(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(Mockery::any(), Mockery::any(), ['Authorization' => 'Bearer stale-jwt', 'Content-Type' => 'application/json'])
+            ->andReturn(['status' => 401, 'body' => '{"error":"invalid_token"}']);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(Mockery::any(), Mockery::any(), ['Authorization' => 'Bearer fresh-jwt', 'Content-Type' => 'application/json'])
+            ->andReturn(['status' => 200, 'body' => '{}']);
+
+        $service = $this->makeService($httpClient, 'https://api.payplug.com', $this->makeTokenManagerExpectingRefresh());
+
+        $result = $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1');
+
+        self::assertSame(200, $result->status);
+    }
+
+    public function testCancelPaymentReturnsOutputOnAFullCancellation(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(
+                'https://api.payplug.com/api/payment-gateway/payments/pay_123/void',
+                [
+                    'account' => ['id' => 'acc_123'],
+                    'orderId' => 'order_1',
+                    'description' => 'Cancellation for order order_1',
+                ],
+                ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
+            )
+            ->andReturn(['status' => 200, 'body' => json_encode(['amount' => 1000, 'requestedAmount' => 1000])]);
+
+        $service = $this->makeService($httpClient);
+
+        $result = $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1');
+
+        // @phpstan-ignore-next-line staticMethod.alreadyNarrowedType (kept as a regression guard, not removed)
+        self::assertInstanceOf(CancellationOutput::class, $result);
+        self::assertSame(200, $result->status);
+        self::assertSame(1000, $result->cancelledAmount);
+        self::assertSame(0, $result->remainingCancellableAmount);
+    }
+
+    public function testCancelPaymentIncludesAmountInTheBodyForAPartialCancellation(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(
+                'https://api.payplug.com/api/payment-gateway/payments/pay_123/void',
+                [
+                    'account' => ['id' => 'acc_123'],
+                    'orderId' => 'order_1',
+                    'description' => 'Cancellation for order order_1',
+                    'amount' => 400,
+                ],
+                ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
+            )
+            ->andReturn(['status' => 200, 'body' => json_encode(['amount' => 400, 'requestedAmount' => 1000])]);
+
+        $service = $this->makeService($httpClient);
+
+        $result = $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1', 400);
+
+        self::assertSame(400, $result->cancelledAmount);
+        self::assertSame(600, $result->remainingCancellableAmount);
+    }
+
+    public function testCancelPaymentIncludesCurrencyInTheBodyWhenGiven(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(
+                'https://api.payplug.com/api/payment-gateway/payments/pay_123/void',
+                [
+                    'account' => ['id' => 'acc_123'],
+                    'orderId' => 'order_1',
+                    'description' => 'Cancellation for order order_1',
+                    'amount' => 400,
+                    'currency' => 'USD',
+                ],
+                ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
+            )
+            ->andReturn(['status' => 200, 'body' => '{}']);
+
+        $service = $this->makeService($httpClient);
+
+        $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1', 400, null, 'USD');
+    }
+
+    public function testCancelPaymentOmitsCurrencyFromTheBodyWhenItIsAnEmptyString(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(
+                'https://api.payplug.com/api/payment-gateway/payments/pay_123/void',
+                [
+                    'account' => ['id' => 'acc_123'],
+                    'orderId' => 'order_1',
+                    'description' => 'Cancellation for order order_1',
+                    'amount' => 400,
+                ],
+                ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
+            )
+            ->andReturn(['status' => 200, 'body' => '{}']);
+
+        $service = $this->makeService($httpClient);
+
+        $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1', 400, null, '');
+    }
+
+    public function testCancelPaymentThrowsInvalidCancellationRequestExceptionForAnEmptyOrderIdBeforeAnyNetworkCall(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldNotReceive('postJson');
+
+        $service = $this->makeService($httpClient, 'https://api.payplug.com', $this->makeTokenManagerExpectingNoInteraction());
+
+        $this->expectException(InvalidCancellationRequestException::class);
+        $this->expectExceptionMessage('orderId must not be empty.');
+        $service->cancelPayment('pay_123', 'acc_123', '', 'Cancellation for order order_1');
+    }
+
+    public function testCancelPaymentThrowsInvalidCancellationRequestExceptionForAnEmptyDescriptionBeforeAnyNetworkCall(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldNotReceive('postJson');
+
+        $service = $this->makeService($httpClient, 'https://api.payplug.com', $this->makeTokenManagerExpectingNoInteraction());
+
+        $this->expectException(InvalidCancellationRequestException::class);
+        $this->expectExceptionMessage('description must not be empty.');
+        $service->cancelPayment('pay_123', 'acc_123', 'order_1', '');
+    }
+
+    /**
+     * @dataProvider nonPositiveAmountProvider
+     */
+    public function testCancelPaymentThrowsCancellationAmountExceptionForANonPositiveAmountBeforeAnyNetworkCall(int $amount): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldNotReceive('postJson');
+
+        $service = $this->makeService($httpClient, 'https://api.payplug.com', $this->makeTokenManagerExpectingNoInteraction());
+
+        $this->expectException(CancellationAmountException::class);
+        $this->expectExceptionMessage('amount must be greater than zero.');
+        $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1', $amount);
+    }
+
+    public function testCancelPaymentThrowsPaymentNotFoundExceptionOnA404(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 404, 'body' => '{}']);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(PaymentNotFoundException::class);
+        $this->expectExceptionCode(404);
+        $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1');
+    }
+
+    public function testCancelPaymentThrowsOperationConflictExceptionOnA409(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 409, 'body' => '{}']);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(OperationConflictException::class);
+        $this->expectExceptionCode(409);
+        $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1');
+    }
+
+    /**
+     * A partial cancellation attempt (amount given) rejected with errorCategory
+     * "INVALID_REQUEST" is normalized to the dedicated exception rather than a generic
+     * ApiException, so a CMS plugin can surface "your contract does not support a partial
+     * cancellation" explicitly instead of a bare HTTP failure.
+     */
+    public function testCancelPaymentThrowsPartialCancellationNotAllowedExceptionForAPartialAmountRejectedAsInvalidRequest(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 403, 'body' => json_encode(['errorCategory' => 'INVALID_REQUEST', 'message' => 'The operation is not allowed.'])]);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(PartialCancellationNotAllowedException::class);
+        $this->expectExceptionMessage('The operation is not allowed.');
+        $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1', 400);
+    }
+
+    /**
+     * The same errorCategory on a *full* cancellation (no amount given) is not a partial-specific
+     * rejection, so it must not be misreported as one — it falls through to the generic
+     * ApiException instead.
+     */
+    public function testCancelPaymentDoesNotThrowPartialCancellationNotAllowedExceptionForAFullCancellation(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 403, 'body' => json_encode(['errorCategory' => 'INVALID_REQUEST', 'message' => 'The operation is not allowed.'])]);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(ApiException::class);
+        $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1');
+    }
+
+    public function testCancelPaymentThrowsPaymentAlreadyCancelledExceptionWhenTheMessageIndicatesAlreadyCancelled(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 400, 'body' => json_encode(['message' => 'This payment has already been cancelled.'])]);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(PaymentAlreadyCancelledException::class);
+        $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1');
+    }
+
+    public function testCancelPaymentThrowsPaymentNotVoidableExceptionWhenTheMessageIndicatesNotVoidable(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 400, 'body' => json_encode(['errorCategory' => 'RESSOURCE_ERROR', 'message' => 'The reference transaction is not voidable.'])]);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(PaymentNotVoidableException::class);
+        $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1');
+    }
+
+    /**
+     * The exact same "not voidable" message is returned by the real API whether the payment was
+     * already captured or already cancelled — this proves the two are indistinguishable from that
+     * message alone, which is why it maps to a dedicated PaymentNotVoidableException rather than
+     * PaymentAlreadyCapturedException or PaymentAlreadyCancelledException.
+     */
+    public function testCancelPaymentThrowsPaymentNotVoidableExceptionOnASecondVoidOfAnAlreadyVoidedPayment(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 400, 'body' => json_encode(['errorCategory' => 'RESSOURCE_ERROR', 'message' => 'The reference transaction is not voidable.'])]);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(PaymentNotVoidableException::class);
+        $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1');
+    }
+
+    public function testCancelPaymentThrowsCardOperationExceptionForAnIssuerRefusalExecCode(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 400, 'body' => json_encode(['execCode' => '4002', 'message' => 'Refused by issuer.'])]);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(CardOperationException::class);
+        $this->expectExceptionMessage('Refused by issuer.');
+        $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1');
+    }
+
+    public function testCancelPaymentThrowsOperationConflictExceptionWhenA200ResponseSignalsADuplicateExecCode(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 200, 'body' => json_encode(['execCode' => '4011', 'message' => 'Duplicate request.'])]);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(OperationConflictException::class);
+        $this->expectExceptionMessage('Duplicate request.');
+        $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1');
+    }
+
+    public function testCancelPaymentThrowsApiExceptionWhenA200ResponseHasANonSuccessExecCodeWithNoRecognizedMessage(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 200, 'body' => json_encode(['execCode' => '5000', 'message' => 'Unexpected system error.'])]);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(ApiException::class);
+        $this->expectExceptionMessage('Unified API cancellation request for payment "pay_123" failed with HTTP status 200 (execCode "5000").');
+        $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1');
+    }
+
+    public function testCancelPaymentRetriesOnceWithAFreshTokenWhenTheCachedOneIsRejected(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(Mockery::any(), Mockery::any(), ['Authorization' => 'Bearer stale-jwt', 'Content-Type' => 'application/json'])
+            ->andReturn(['status' => 401, 'body' => '{"error":"invalid_token"}']);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(Mockery::any(), Mockery::any(), ['Authorization' => 'Bearer fresh-jwt', 'Content-Type' => 'application/json'])
+            ->andReturn(['status' => 200, 'body' => '{}']);
+
+        $service = $this->makeService($httpClient, 'https://api.payplug.com', $this->makeTokenManagerExpectingRefresh());
+
+        $result = $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1');
+
+        self::assertSame(200, $result->status);
     }
 
     private function makeTokenManager(): TokenManager

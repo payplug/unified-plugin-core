@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PayplugUnifiedCore\Validators;
 
+use PayplugUnifiedCore\DataValues\AuthorizationType;
 use PayplugUnifiedCore\Dto\CommonFieldsDto;
 use PayplugUnifiedCore\Exceptions\InvalidCommonFieldsException;
 use PayplugUnifiedCore\Exceptions\PayplugException;
@@ -40,6 +41,10 @@ final class CommonFieldsDtoValidator
         Assert::notEmpty($dto->orderId, 'orderId', InvalidCommonFieldsException::class);
         Assert::notEmpty($dto->currency, 'currency', InvalidCommonFieldsException::class);
         Assert::notNegative($dto->amount, 'amount', InvalidCommonFieldsException::class);
+
+        if ($dto->authorizationType !== null && !AuthorizationType::isValid($dto->authorizationType)) {
+            throw new InvalidCommonFieldsException(\sprintf('"%s" is not a valid AuthorizationType.', $dto->authorizationType));
+        }
     }
 
     /**

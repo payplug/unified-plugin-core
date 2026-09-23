@@ -5,16 +5,34 @@ declare(strict_types=1);
 namespace PayplugUnifiedCore\Services;
 
 use PayplugUnifiedCore\Contracts\PaymentRequestPayload;
+use PayplugUnifiedCore\DataValues\PaymentOutcome;
 use PayplugUnifiedCore\Dto\HostedFieldDto;
 use PayplugUnifiedCore\Dto\PaymentDto;
+use PayplugUnifiedCore\Exceptions\AmountExceedsAvailableException;
 use PayplugUnifiedCore\Exceptions\ApiException;
+use PayplugUnifiedCore\Exceptions\AuthorizationExpiredException;
+use PayplugUnifiedCore\Exceptions\CancellationAmountException;
+use PayplugUnifiedCore\Exceptions\CaptureAmountException;
+use PayplugUnifiedCore\Exceptions\CardOperationException;
+use PayplugUnifiedCore\Exceptions\InvalidCancellationRequestException;
+use PayplugUnifiedCore\Exceptions\InvalidCaptureRequestException;
 use PayplugUnifiedCore\Exceptions\InvalidHostedFieldException;
 use PayplugUnifiedCore\Exceptions\InvalidPaymentException;
 use PayplugUnifiedCore\Exceptions\InvalidRefundRequestException;
+use PayplugUnifiedCore\Exceptions\MultipleCaptureNotAllowedException;
+use PayplugUnifiedCore\Exceptions\OperationConflictException;
+use PayplugUnifiedCore\Exceptions\PartialCancellationNotAllowedException;
+use PayplugUnifiedCore\Exceptions\PaymentAlreadyCancelledException;
+use PayplugUnifiedCore\Exceptions\PaymentAlreadyCapturedException;
+use PayplugUnifiedCore\Exceptions\PaymentNotCapturableException;
 use PayplugUnifiedCore\Exceptions\PaymentNotFoundException;
+use PayplugUnifiedCore\Exceptions\PaymentNotVoidableException;
 use PayplugUnifiedCore\Exceptions\RefundAmountException;
+use PayplugUnifiedCore\Output\CancellationOutput;
+use PayplugUnifiedCore\Output\CaptureOutput;
 use PayplugUnifiedCore\Output\PaymentOutput;
 use PayplugUnifiedCore\Utilities\Helpers\Assert;
+use PayplugUnifiedCore\Utilities\Helpers\ExecCodeMapper;
 use PayplugUnifiedCore\Validators\HostedFieldDtoValidator;
 use PayplugUnifiedCore\Validators\PaymentDtoValidator;
 
@@ -56,6 +74,10 @@ use PayplugUnifiedCore\Validators\PaymentDtoValidator;
  * sendPostJson() rather than reconstructing it.
  *
  * createRefund() (PRE-3589) creates a full or partial refund of a payment.
+ *
+ * capturePayment() and cancelPayment() capture or void a payment/authorization, full or partial
+ * via $amount, following createRefund()'s shape. Error normalization for both is centralized in
+ * assertOperationSuccess().
  */
 final class UnifiedApiPaymentService extends AbstractUnifiedApiService
 {
@@ -66,9 +88,17 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
     private const PAYMENT_PATH = '/api/payment-gateway/payments/%s';
     private const PAYMENTS_PATH = '/api/payment-gateway/payments';
     private const REFUND_PATH = '/api/payment-gateway/payments/%s/refund';
+    // CAPTURE_PATH/CANCEL_PATH both take a %s id, for capturePayment()/cancelPayment().
+    private const CAPTURE_PATH = '/api/payment-gateway/payments/%s/capture';
+    private const CANCEL_PATH = '/api/payment-gateway/payments/%s/void';
     // OPERATION_PATH takes a %s id, for getOperation().
     private const OPERATION_PATH = '/processing-operations/operations/public/%s';
     private const HTTP_NOT_FOUND = 404;
+    private const HTTP_CONFLICT = 409;
+    // Takes a %s id, for getPayment()/createRefund()/assertOperationSuccess().
+    private const PAYMENT_NOT_FOUND_MESSAGE = 'Unified API has no payment "%s".';
+    // Issuer/scheme refusal bucket, per ExecCodeMapper's execCode convention.
+    private const ISSUER_REFUSAL_EXEC_CODE_PREFIX = '4';
 
     /**
      * @return array{status: int, body: string}
@@ -89,7 +119,7 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
         // terminal outcome a plugin handles differently from "the API is broken", so it gets the
         // dedicated exception type rather than being flattened into ApiException.
         if ($response['status'] === self::HTTP_NOT_FOUND) {
-            throw new PaymentNotFoundException(\sprintf('Unified API has no payment "%s".', $paymentId), self::HTTP_NOT_FOUND);
+            throw new PaymentNotFoundException(\sprintf(self::PAYMENT_NOT_FOUND_MESSAGE, $paymentId), self::HTTP_NOT_FOUND);
         }
 
         if ($response['status'] < 200 || $response['status'] >= 300) {
@@ -136,8 +166,10 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
     {
         if ($dto instanceof HostedFieldDto) {
             HostedFieldDtoValidator::validate($dto);
+            $isAuthorizationOnly = !$dto->common->capture;
         } elseif ($dto instanceof PaymentDto) {
             PaymentDtoValidator::validate($dto);
+            $isAuthorizationOnly = !$dto->common->capture;
         } else {
             throw new \LogicException(\sprintf('Unsupported PaymentRequestPayload implementation: %s.', \get_class($dto)));
         }
@@ -157,8 +189,27 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
             $response['body'],
             $this->extractNestedString($data, 'redirect', 'url'),
             $this->extractRedirectHtml($data),
-            $this->extractNestedString($data, 'paymentMethod', 'id')
+            $this->extractNestedString($data, 'paymentMethod', 'id'),
+            $this->extractTopLevelString($data, 'maxCaptureDate'),
+            $this->extractRemainingCapturableAmountAtCreation($data, $isAuthorizationOnly)
         );
+    }
+
+    /**
+     * At creation time nothing has been captured yet, so this is just the authorized amount
+     * itself — "amount" over "requestedAmount", since a partial-authorization response (issuer
+     * approves less than requested) makes them differ. Null for a direct payment
+     * (capture === true) or when the response has neither field.
+     *
+     * @param mixed $data the json_decode()'d response body
+     */
+    private function extractRemainingCapturableAmountAtCreation($data, bool $isAuthorizationOnly): ?int
+    {
+        if (!$isAuthorizationOnly) {
+            return null;
+        }
+
+        return $this->extractTopLevelInt($data, 'amount') ?? $this->extractTopLevelInt($data, 'requestedAmount');
     }
 
     /**
@@ -297,7 +348,7 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
         $response = $this->sendPostJson($url, $body);
 
         if ($response['status'] === self::HTTP_NOT_FOUND) {
-            throw new PaymentNotFoundException(\sprintf('Unified API has no payment "%s".', $operationId), self::HTTP_NOT_FOUND);
+            throw new PaymentNotFoundException(\sprintf(self::PAYMENT_NOT_FOUND_MESSAGE, $operationId), self::HTTP_NOT_FOUND);
         }
 
         if ($response['status'] < 200 || $response['status'] >= 300) {
@@ -305,5 +356,320 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
         }
 
         return $response;
+    }
+
+    /**
+     * Captures a payment or authorization, in full or, when $amount is given, in part. Whether a
+     * second (or later) call succeeds against the same authorization depends on the account/
+     * processor supporting multiple captures — this method itself places no limit on how many
+     * times it can be called. $orderId/$description/$amount follow createRefund()'s shape.
+     * $currency is required by the API whenever $amount is given (a partial capture) and is sent
+     * only when non-null and non-empty, same as createRefund().
+     *
+     * @throws InvalidCaptureRequestException if $orderId or $description is empty.
+     * @throws CaptureAmountException if $amount is given and is zero or negative.
+     * @throws PaymentNotFoundException on HTTP 404.
+     * @throws OperationConflictException on HTTP 409.
+     * @throws MultipleCaptureNotAllowedException if a capture is rejected as a duplicate on an
+     *                      authorization the account/processor does not allow capturing more
+     *                      than once.
+     * @throws AuthorizationExpiredException|PaymentNotCapturableException|AmountExceedsAvailableException
+     *                      see assertOperationSuccess().
+     * @throws CardOperationException if the issuer refused the capture.
+     * @throws ApiException fallback for any other non-2xx status or malformed response.
+     */
+    public function capturePayment(
+        string $paymentId,
+        string $accountId,
+        string $orderId,
+        string $description,
+        ?int $amount = null,
+        ?string $extraData = null,
+        ?string $currency = null
+    ): CaptureOutput {
+        Assert::notEmpty($orderId, 'orderId', InvalidCaptureRequestException::class);
+        Assert::notEmpty($description, 'description', InvalidCaptureRequestException::class);
+
+        if ($amount !== null) {
+            Assert::positive($amount, 'amount', CaptureAmountException::class);
+        }
+
+        $url = $this->baseUrl . \sprintf(self::CAPTURE_PATH, rawurlencode($paymentId));
+
+        $body = [
+            'account' => ['id' => $accountId],
+            'orderId' => $orderId,
+            'description' => $description,
+        ];
+
+        if ($amount !== null) {
+            $body['amount'] = $amount;
+        }
+
+        if ($currency !== null && $currency !== '') {
+            $body['currency'] = $currency;
+        }
+
+        if ($extraData !== null && $extraData !== '') {
+            $body['extraData'] = $extraData;
+        }
+
+        $response = $this->sendPostJson($url, $body);
+
+        $this->assertOperationSuccess($response, $paymentId, 'capture', false);
+
+        $data = json_decode($response['body'], true);
+
+        return new CaptureOutput(
+            $response['status'],
+            $response['body'],
+            $this->extractTopLevelInt($data, 'amount'),
+            $this->extractTopLevelInt($data, 'requestedAmount'),
+            $this->extractTopLevelString($data, 'maxCaptureDate')
+        );
+    }
+
+    /**
+     * Cancels (voids) a payment or authorization, in full by default or, when $amount is given, in
+     * part. $orderId/$description/$amount follow createRefund()'s shape. Omitting $amount only
+     * releases the full authorization when nothing has been captured against it yet; once any
+     * capture has occurred, the API requires $amount to be the exact remaining
+     * authorized-but-uncaptured balance and rejects an omitted or mismatched one. $currency is
+     * required by the API whenever $amount is given and is sent only when non-null and
+     * non-empty, same as createRefund().
+     *
+     * @throws InvalidCancellationRequestException if $orderId or $description is empty.
+     * @throws CancellationAmountException if $amount is given and is zero or negative.
+     * @throws PaymentNotFoundException on HTTP 404.
+     * @throws OperationConflictException on HTTP 409.
+     * @throws PartialCancellationNotAllowedException if partial cancellation isn't enabled on
+     *                      this account's contract.
+     * @throws AuthorizationExpiredException|PaymentAlreadyCancelledException|PaymentNotVoidableException|AmountExceedsAvailableException
+     *                      see assertOperationSuccess().
+     * @throws CardOperationException if the issuer refused the cancellation.
+     * @throws ApiException fallback for any other non-2xx status or malformed response.
+     */
+    public function cancelPayment(
+        string $paymentId,
+        string $accountId,
+        string $orderId,
+        string $description,
+        ?int $amount = null,
+        ?string $extraData = null,
+        ?string $currency = null
+    ): CancellationOutput {
+        Assert::notEmpty($orderId, 'orderId', InvalidCancellationRequestException::class);
+        Assert::notEmpty($description, 'description', InvalidCancellationRequestException::class);
+
+        if ($amount !== null) {
+            Assert::positive($amount, 'amount', CancellationAmountException::class);
+        }
+
+        $url = $this->baseUrl . \sprintf(self::CANCEL_PATH, rawurlencode($paymentId));
+
+        $body = [
+            'account' => ['id' => $accountId],
+            'orderId' => $orderId,
+            'description' => $description,
+        ];
+
+        if ($amount !== null) {
+            $body['amount'] = $amount;
+        }
+
+        if ($currency !== null && $currency !== '') {
+            $body['currency'] = $currency;
+        }
+
+        if ($extraData !== null && $extraData !== '') {
+            $body['extraData'] = $extraData;
+        }
+
+        $response = $this->sendPostJson($url, $body);
+
+        $this->assertOperationSuccess($response, $paymentId, 'cancellation', $amount !== null);
+
+        $data = json_decode($response['body'], true);
+
+        return new CancellationOutput(
+            $response['status'],
+            $response['body'],
+            $this->extractTopLevelInt($data, 'amount'),
+            $this->extractTopLevelInt($data, 'requestedAmount')
+        );
+    }
+
+    /**
+     * Shared capturePayment()/cancelPayment() error normalization. A 2xx HTTP status alone is not
+     * enough to consider the operation successful: the Unified API can return HTTP 200 with a
+     * non-"0000" execCode (e.g. a duplicate/replayed request) — that must still be treated as a
+     * failure and classified, not returned to the caller as a successful CaptureOutput/
+     * CancellationOutput. Checked in order: 404 → not found; 409 → conflict; "message" keyword
+     * match → duplicate / expired / already captured / not voidable / not capturable / already
+     * cancelled / amount exceeded; execCode "4XXX" → issuer refusal; partial cancel rejected as
+     * errorCategory INVALID_REQUEST → not allowed; else generic ApiException. "not voidable"/
+     * "not capturable" each map to their own operation-specific exception rather than
+     * PaymentAlreadyCapturedException/PaymentAlreadyCancelledException: the same message is
+     * returned whether the payment was already captured or already cancelled, so it cannot be
+     * used to distinguish those two causes. A "duplicate" message during a capture maps to
+     * MultipleCaptureNotAllowedException rather than OperationConflictException: on an
+     * authorization the account/processor does not allow capturing more than once, every capture
+     * after the first is rejected this way regardless of amount, orderId, or description, so it
+     * reflects "this authorization only supports one capture" rather than a literal replay of an
+     * identical request. The same message during a cancellation still maps to
+     * OperationConflictException.
+     *
+     * @param array{status: int, body: string} $response
+     * @throws PaymentNotFoundException
+     * @throws OperationConflictException
+     * @throws MultipleCaptureNotAllowedException
+     * @throws CardOperationException
+     * @throws PartialCancellationNotAllowedException
+     * @throws AuthorizationExpiredException
+     * @throws PaymentAlreadyCapturedException
+     * @throws PaymentAlreadyCancelledException
+     * @throws PaymentNotVoidableException
+     * @throws PaymentNotCapturableException
+     * @throws AmountExceedsAvailableException
+     * @throws ApiException
+     */
+    private function assertOperationSuccess(array $response, string $paymentId, string $operationLabel, bool $isPartialCancelAttempt): void
+    {
+        if ($response['status'] === self::HTTP_NOT_FOUND) {
+            throw new PaymentNotFoundException(\sprintf(self::PAYMENT_NOT_FOUND_MESSAGE, $paymentId), self::HTTP_NOT_FOUND);
+        }
+
+        if ($response['status'] === self::HTTP_CONFLICT) {
+            throw new OperationConflictException(
+                \sprintf('Unified API %s request for payment "%s" conflicted with HTTP status %d.', $operationLabel, $paymentId, self::HTTP_CONFLICT),
+                self::HTTP_CONFLICT
+            );
+        }
+
+        $data = json_decode($response['body'], true);
+        $execCode = $this->extractTopLevelString($data, 'execCode');
+        $isHttpSuccess = $response['status'] >= 200 && $response['status'] < 300;
+        $isExecCodeSuccess = $execCode === null || ExecCodeMapper::toPaymentOutcome($execCode) === PaymentOutcome::PAID;
+
+        if ($isHttpSuccess && $isExecCodeSuccess) {
+            return;
+        }
+
+        $message = $this->extractTopLevelString($data, 'message');
+
+        $this->throwForMessageKeyword($message, $operationLabel, $response['status']);
+
+        if ($execCode !== null && strpos($execCode, self::ISSUER_REFUSAL_EXEC_CODE_PREFIX) === 0) {
+            throw new CardOperationException(
+                $message ?? \sprintf('Unified API %s request for payment "%s" was refused by the issuer (execCode "%s").', $operationLabel, $paymentId, $execCode),
+                $response['status']
+            );
+        }
+
+        $errorCategory = $this->extractTopLevelString($data, 'errorCategory');
+
+        if ($isPartialCancelAttempt && $errorCategory === 'INVALID_REQUEST') {
+            throw new PartialCancellationNotAllowedException(
+                $message ?? \sprintf('Partial cancellation is not enabled on the contract for payment "%s".', $paymentId),
+                $response['status']
+            );
+        }
+
+        throw new ApiException(
+            \sprintf(
+                'Unified API %s request for payment "%s" failed with HTTP status %d%s.',
+                $operationLabel,
+                $paymentId,
+                $response['status'],
+                $execCode !== null ? \sprintf(' (execCode "%s")', $execCode) : ''
+            ),
+            $response['status']
+        );
+    }
+
+    /**
+     * The "message" keyword half of assertOperationSuccess()'s classification, factored out to
+     * keep that method's cognitive complexity in check. A no-op when $message is null — the
+     * caller falls through to its own execCode/errorCategory checks and, ultimately, the generic
+     * ApiException.
+     *
+     * @throws OperationConflictException
+     * @throws MultipleCaptureNotAllowedException
+     * @throws AuthorizationExpiredException
+     * @throws PaymentAlreadyCapturedException
+     * @throws PaymentNotVoidableException
+     * @throws PaymentNotCapturableException
+     * @throws PaymentAlreadyCancelledException
+     * @throws AmountExceedsAvailableException
+     */
+    private function throwForMessageKeyword(?string $message, string $operationLabel, int $status): void
+    {
+        if ($message === null) {
+            return;
+        }
+
+        $lowerMessage = strtolower($message);
+
+        if (strpos($lowerMessage, 'duplicate') !== false) {
+            if ($operationLabel === 'capture') {
+                throw new MultipleCaptureNotAllowedException($message, $status);
+            }
+
+            throw new OperationConflictException($message, $status);
+        }
+
+        if (strpos($lowerMessage, 'expired') !== false) {
+            throw new AuthorizationExpiredException($message, $status);
+        }
+
+        if (strpos($lowerMessage, 'already') !== false && strpos($lowerMessage, 'captur') !== false) {
+            throw new PaymentAlreadyCapturedException($message, $status);
+        }
+
+        if (strpos($lowerMessage, 'not voidable') !== false) {
+            throw new PaymentNotVoidableException($message, $status);
+        }
+
+        if (strpos($lowerMessage, 'not capturable') !== false) {
+            throw new PaymentNotCapturableException($message, $status);
+        }
+
+        if (strpos($lowerMessage, 'already') !== false && (strpos($lowerMessage, 'cancel') !== false || strpos($lowerMessage, 'void') !== false)) {
+            throw new PaymentAlreadyCancelledException($message, $status);
+        }
+
+        if (strpos($lowerMessage, 'exceed') !== false) {
+            throw new AmountExceedsAvailableException($message, $status);
+        }
+    }
+
+    /**
+     * Reads a top-level string field out of the already-decoded response body. Same
+     * null-on-anything-unexpected reasoning as extractNestedString().
+     *
+     * @param mixed $data the json_decode()'d response body
+     */
+    private function extractTopLevelString($data, string $key): ?string
+    {
+        if (!\is_array($data) || !isset($data[$key]) || !\is_string($data[$key])) {
+            return null;
+        }
+
+        return $data[$key];
+    }
+
+    /**
+     * Reads a top-level integer field out of the already-decoded response body. Same reasoning as
+     * extractTopLevelString().
+     *
+     * @param mixed $data the json_decode()'d response body
+     */
+    private function extractTopLevelInt($data, string $key): ?int
+    {
+        if (!\is_array($data) || !isset($data[$key]) || !\is_int($data[$key])) {
+            return null;
+        }
+
+        return $data[$key];
     }
 }

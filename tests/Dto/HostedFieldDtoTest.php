@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PayplugUnifiedCore\Tests\Dto;
 
+use PayplugUnifiedCore\DataValues\AuthorizationType;
 use PayplugUnifiedCore\Dto\AddressDto;
 use PayplugUnifiedCore\Dto\BillingDto;
 use PayplugUnifiedCore\Dto\BrowserDto;
@@ -73,6 +74,42 @@ final class HostedFieldDtoTest extends TestCase
         $dto = new HostedFieldDto($common, 'hf_abc');
 
         self::assertFalse($dto->createPayloadBody()['capture']);
+    }
+
+    public function testCreatePayloadBodyIncludesPartialAuthorizationAsTopLevelKeyWhenProvided(): void
+    {
+        $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789');
+        $common->capture = false;
+        $common->partialAuthorization = true;
+
+        $dto = new HostedFieldDto($common, 'hf_abc');
+
+        self::assertTrue($dto->createPayloadBody()['partialAuthorization']);
+    }
+
+    public function testCreatePayloadBodyOmitsPartialAuthorizationWhenNotProvided(): void
+    {
+        $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789'), 'hf_abc');
+
+        self::assertArrayNotHasKey('partialAuthorization', $dto->createPayloadBody());
+    }
+
+    public function testCreatePayloadBodyNestsAuthorizationTypeUnderOperationWhenProvided(): void
+    {
+        $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789');
+        $common->capture = false;
+        $common->authorizationType = AuthorizationType::FINAL_AUTHORIZATION;
+
+        $dto = new HostedFieldDto($common, 'hf_abc');
+
+        self::assertSame(['authorizationType' => AuthorizationType::FINAL_AUTHORIZATION], $dto->createPayloadBody()['operation']);
+    }
+
+    public function testCreatePayloadBodyOmitsOperationWhenAuthorizationTypeIsNotProvided(): void
+    {
+        $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789'), 'hf_abc');
+
+        self::assertArrayNotHasKey('operation', $dto->createPayloadBody());
     }
 
     public function testCreatePayloadBodyIncludesOptionalFieldsWhenProvided(): void

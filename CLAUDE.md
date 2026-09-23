@@ -35,7 +35,13 @@ that same call also creates or pays with a card alias, via either of two caller-
 PRE-3590's follow-up rework, the payment-creation method `createPayment()` (renamed from its
 original name) lives directly on `UnifiedApiPaymentService` itself rather than on a separate
 sibling service, which no longer exists. `UnifiedApiPaymentService` also exposes `createRefund()`
-(PRE-3589) for a full or partial refund of a payment; and two more
+(PRE-3589) for a full or partial refund of a payment; and, as of the authorization/capture/
+cancellation lifecycle ticket, `capturePayment()` and `cancelPayment()` for capturing (immediately
+or in a later, deferred call, one or several times, full or partial) or cancelling (full by
+default, partial when an amount is given) a payment or authorization, producing a `CaptureOutput`/
+`CancellationOutput` respectively — an authorization itself is not a new call at all, just
+`createPayment()` with `CommonFieldsDto::$capture` set to `false`, optionally alongside the new
+`partialAuthorization` flag and/or `AuthorizationType`; and two more
 categories: `src/Dto/` (`HostedFieldDto`, `hfToken`-driven hosted-fields payment, optionally also
 creating an alias via `recurringMode`; `PaymentDto`, paying with an already-created alias instead,
 no `hfToken` at all; `BillingDto`/
@@ -101,7 +107,7 @@ running Docker daemon. The image builds automatically the first time any target 
   one-off class. `Models/` no longer exists as a category — every class that lived there moved to
   `DataValues/` or `Output/` (see those bullets below for which, and why).
 - `Exceptions/` holds the domain exception hierarchy: `PayplugException` (base, extends
-  `\Exception` directly) and thirteen subtypes — `RefundAmountException`, `PaymentNotFoundException`,
+  `\Exception` directly) and twenty-six subtypes — `RefundAmountException`, `PaymentNotFoundException`,
   `InvalidPhoneNumberException`, `CardOperationException`, `ApiException`,
   `InvalidOperationDataException`, `InvalidTokenException`, `InvalidNotificationException`,
   `InvalidHostedFieldException`, `InvalidCommonFieldsException`, `InvalidPaymentException`
@@ -111,7 +117,34 @@ running Docker daemon. The image builds automatically the first time any target 
   (PRE-3589, thrown by `createRefund()` when `orderId`/`description` is
   empty, checked locally before any HTTP call since `ApiException` only carries the HTTP status,
   not which field the API's own response said was missing; `submerchantExternalId` was checked the
-  same way until 2026-09-04, when it became optional — see the `createRefund()` section below) — each
+  same way until 2026-09-04, when it became optional — see the `createRefund()` section below),
+  and, added for the authorization/capture/cancellation lifecycle ticket: `InvalidCaptureRequestException`/
+  `CaptureAmountException` and `InvalidCancellationRequestException`/`CancellationAmountException`
+  (the same local-validation pair `InvalidRefundRequestException`/`RefundAmountException`
+  established for `createRefund()`, one pair per operation, thrown by `capturePayment()`/
+  `cancelPayment()` before any HTTP call for an empty `orderId`/`description` or a
+  zero-or-negative `amount`), and nine business-outcome subtypes normalized from the Unified API's
+  own response by a shared private classifier,
+  `UnifiedApiPaymentService::assertOperationSuccess()` (see the `Services/` section below for the
+  exact classification order): `AuthorizationExpiredException`, `PaymentAlreadyCapturedException`,
+  `PaymentAlreadyCancelledException`, `AmountExceedsAvailableException`, `OperationConflictException`
+  (HTTP 409, or an execCode signalling a duplicate/replayed request on an otherwise-2xx response —
+  a concurrent or repeated capture/cancellation on the same payment),
+  `PartialCancellationNotAllowedException` (a partial `cancelPayment()` call rejected because the
+  account's contract doesn't have partial cancellation enabled),
+  `PaymentNotVoidableException`/`PaymentNotCapturableException` (a `cancelPayment()`/
+  `capturePayment()` call rejected because the payment is no longer in a state that operation can
+  apply to — kept separate from `PaymentAlreadyCapturedException`/`PaymentAlreadyCancelledException`
+  since the Unified API's own rejection message for this case does not distinguish which of those
+  two states caused it), and `MultipleCaptureNotAllowedException` (every `capturePayment()` call
+  after the first against the same authorization rejected as a duplicate, regardless of `amount`/
+  `orderId`/`description` — the account/processor does not support capturing that authorization
+  more than once; kept distinct from `OperationConflictException` since it reflects that
+  capability limit rather than a literal replay of an identical request). An issuer refusal reuses
+  the pre-existing `CardOperationException` — its first real usage — rather than adding a 27th
+  type, since that exception already existed in the hierarchy for exactly this purpose and
+  nothing about
+  it is capture/cancellation-specific. Each subtype in this hierarchy remains
   a plain marker class extending `PayplugException` directly, with no custom constructor or
   properties, so CMS plugins can catch specific error types instead of a generic exception. Any
   future addition to this hierarchy should follow the same pattern: one class per file, no PHP
@@ -129,7 +162,13 @@ running Docker daemon. The image builds automatically the first time any target 
   `@codeCoverageIgnore`d constructor, same pattern as the `Utilities/Helpers/` classes below)
   holding 6 string constants (`PAID`, `AUTHORIZED`, `CAPTURE_REQUIRED`, `THREE_DS_PENDING`,
   `REFUNDED`, `FAILED`) — a PHP 7.1 stand-in for a PHP 8.1 `enum` — plus `isValid(string $value):
-  bool`. `OperationData` is the persistence value object `IPaymentRepository` (PRE-3467, not yet
+  bool`. `AuthorizationType` (added for the authorization/capture/cancellation lifecycle ticket,
+  same pattern) holds the Unified API's `operation.authorizationType` values for an
+  authorization-only creation (`CommonFieldsDto::$capture === false`): `PRE_AUTHORIZATION`
+  (`'pre_authorization'`) and `FINAL_AUTHORIZATION` (`'final_authorization'`) — the API accepts
+  either casing, so `isValid()` compares case-insensitively even though the constants themselves
+  use lower snake_case as the canonical form. `OperationData` is the persistence value object
+  `IPaymentRepository` (PRE-3467, not yet
   implemented) will work with: public properties (`operationId`, `execCode`, `outcome`, `amount`,
   `orderId`, each with a `/** @var */` docblock — PHP 7.1 predates typed properties) set through a
   validating constructor. Per this library's "never trust external I/O" rule, `OperationData`'s
@@ -186,7 +225,30 @@ running Docker daemon. The image builds automatically the first time any target 
   operation just created (`hfToken` + `paymentMethod.saveFutureUsage`) or reused (`aliasId`-based
   payment), `null` when the operation didn't involve an alias at all. None of the three fields maps
   to a `PaymentOutcome` constant — that mapping, for the asynchronous webhook/3DS-return
-  confirmation that comes later, is PRE-3588's job, not this ticket's. Matching tests in
+  confirmation that comes later, is PRE-3588's job, not this ticket's. `maxCaptureDate` and
+  `remainingCapturableAmount` (added for the authorization/capture/cancellation lifecycle ticket)
+  are two more trailing, defaulted constructor parameters (same source-compatibility reasoning as
+  `TokenOutput::$idToken`), only meaningful for an authorization-only creation
+  (`CommonFieldsDto::$capture === false`) — `createPayment()` leaves both `null` for a direct
+  payment. `maxCaptureDate` is read straight off the response's own top-level field.
+  `remainingCapturableAmount` at creation time is the freshly authorized amount itself (nothing has
+  been captured yet) rather than a subtraction, unlike the derived field of the same name on
+  `CaptureOutput` below — read from the response's own `amount` field ahead of `requestedAmount`,
+  since a `partialAuthorization` response (see `Dto/` below) makes the two differ: `amount` is
+  what the issuer actually approved, `requestedAmount` only what was asked for.
+
+  `CaptureOutput` and `CancellationOutput` (both added for the authorization/capture/cancellation
+  lifecycle ticket) are the outputs of `UnifiedApiPaymentService::capturePayment()`/
+  `cancelPayment()` respectively — same unvalidated-constructor reasoning as `PaymentOutput`.
+  `CaptureOutput` holds `status`/`body` plus `capturedAmount`/`requestedAmount`/`maxCaptureDate`
+  read directly off the response's own `amount`/`requestedAmount`/`maxCaptureDate` fields, and its
+  own derived `remainingCapturableAmount` (`requestedAmount - capturedAmount`, floored at `0`, only
+  when both are present) — computed on the reading that `amount` on a capture response is the
+  cumulative amount captured so far on the payment (matching `requestedAmount` staying the fixed,
+  originally authorized amount across every capture call), which is what keeps this field correct
+  across several successive partial captures against the same authorization.
+  `CancellationOutput` holds `status`/`body` plus `cancelledAmount`/`requestedAmount` and its own
+  derived `remainingCancellableAmount`, read and computed the same way. Matching tests in
   `tests/Output/`.
 - `Dto/` is a category of its own — split out from `Models/` once more than one DTO was expected,
   rather than growing `Models/` indefinitely (see the top-level-categories bullet above). Holds
@@ -255,10 +317,15 @@ running Docker daemon. The image builds automatically the first time any target 
   more often than a real `null`, and `''` is rejected by the API just as a foreign submerchant is,
   so the two are treated identically rather than only `null` being honored),
   `description`/`capture` (default `true`)/`descriptor`/`notificationUrl`/`extraData`/`billing`/
-  `shipping`/`successUrl`/`cancelUrl` as public properties set by direct assignment after
-  construction (`successUrl`/`cancelUrl` added to carry the 3DS/SCA challenge's redirect-return
-  URLs; `billing`/`shipping`, typed `?BillingDto`/`?ShippingDto`, added to carry those two blocks —
-  see `BuildsCommonPayloadBody` below) — reusable the same way `BrowserDto`/`CustomerDto` are.
+  `shipping`/`successUrl`/`cancelUrl`/`partialAuthorization`/`authorizationType` as public
+  properties set by direct assignment after construction (`successUrl`/`cancelUrl` added to carry
+  the 3DS/SCA challenge's redirect-return URLs; `billing`/`shipping`, typed
+  `?BillingDto`/`?ShippingDto`, added to carry those two blocks — see `BuildsCommonPayloadBody`
+  below; `partialAuthorization` and `authorizationType`, both added for the authorization/capture/
+  cancellation lifecycle ticket and only meaningful alongside `capture === false`:
+  `partialAuthorization` (`bool|null`) lets the card issuer approve less than `$amount` instead of
+  declining outright; `authorizationType` (`string|null`) holds one of `AuthorizationType`'s
+  constants) — reusable the same way `BrowserDto`/`CustomerDto` are.
   `description` stays nullable and settable after construction like the other optional fields
   (kept that way rather than promoted to a required constructor parameter, to avoid a breaking
   change for existing callers) — but unlike them it's never conditionally omitted from the body:
@@ -469,7 +536,10 @@ running Docker daemon. The image builds automatically the first time any target 
   CommonFieldsDto $dto): void` checks `accountId`/`orderId`/`currency` non-empty and `amount` not
   negative, throwing the new `InvalidCommonFieldsException` (10th subtype in the `Exceptions/`
   hierarchy) on the first problem found — reusable by any payment-method DTO that composes a
-  `CommonFieldsDto`, which by PRE-3590 is both `HostedFieldDto` and `PaymentDto`.
+  `CommonFieldsDto`, which by PRE-3590 is both `HostedFieldDto` and `PaymentDto`. Added for the
+  authorization/capture/cancellation lifecycle ticket: an additional check rejecting a non-null
+  `authorizationType` that isn't one of `AuthorizationType`'s constants (case-insensitively), same
+  `PaymentOutcome::isValid()`-against-`OperationData` precedent.
   `HostedFieldDtoValidator::validate(HostedFieldDto $dto): void` delegates to it (catching
   `InvalidCommonFieldsException` and wrapping it into `InvalidHostedFieldException`, so
   `createPayment()`'s existing `@throws InvalidHostedFieldException` contract for
@@ -862,6 +932,109 @@ running Docker daemon. The image builds automatically the first time any target 
   before each local run. Extending that integration test for the `PaymentDto` flow is explicitly
   out of scope for PRE-3590 (no VPN-reachable way to mint/verify a real alias in this environment)
   — left for whoever next touches that suite with VPN access.
+
+  `capturePayment(string $paymentId, string $accountId, string $orderId, string $description,
+  ?int $amount = null, ?string $extraData = null, ?string $currency = null): CaptureOutput` and
+  `cancelPayment(string $paymentId, string $accountId, string $orderId, string $description,
+  ?int $amount = null, ?string $extraData = null, ?string $currency = null): CancellationOutput`
+  (authorization/capture/cancellation lifecycle ticket) capture or void a payment/authorization,
+  full by default or partial when `$amount` is given, one or several times — the same
+  `capturePayment()` call whether it's the first capture after a deferred authorization or a
+  later successive partial one, since there is no separate "immediate capture" call: an immediate
+  capture is just `createPayment()` with `capture: true`. Whether an authorization actually
+  accepts more than one capture depends on the account/processor supporting it — `MultipleCaptureNotAllowedException`
+  (see `Exceptions/` above) is what a second (or later) `capturePayment()` call throws when it
+  doesn't; this method places no limit of its own on how many times it can be called. Both follow `createRefund()`'s exact
+  shape and reasoning — scalar parameters, no dedicated `Dto`/`Validator` pair,
+  `Assert::notEmpty()` on `orderId`/`description` and `Assert::positive()` on `amount` when given,
+  checked locally before any HTTP call (throwing
+  `InvalidCaptureRequestException`/`CaptureAmountException` or
+  `InvalidCancellationRequestException`/`CancellationAmountException` respectively) — rather than
+  introducing new `Dto/` classes, since neither operation needs anything beyond the same
+  `account`/`orderId`/`description`/`amount`/`extraData`/`currency` fields refund already
+  established this pattern for. `$currency`, like on `createRefund()`, is sent only when non-null
+  and non-empty — required by the API whenever `$amount` is given (a partial capture/cancellation
+  without it is rejected with `"Invalid parameter."`). `CAPTURE_PATH`/`CANCEL_PATH`
+  (`/api/payment-gateway/payments/%s/capture` and `/%s/void`) share `PAYMENT_PATH`/
+  `REFUND_PATH`'s prefix. Omitting `$amount` on `cancelPayment()` only releases the full
+  authorization when nothing has been captured against it yet — once any capture has occurred, a
+  void with no `amount` is rejected with `"The void amount is invalid."`, and the caller must pass
+  the exact remaining authorized-but-uncaptured balance as `$amount`. The cumulative amount
+  already captured/cancelled across prior calls is not tracked client-side: the
+  Unified API itself rejects a cumulative amount exceeding what's available, so that business rule
+  isn't duplicated here, same precedent as `createRefund()`'s amount handling.
+
+  Both delegate their error handling to a shared private `assertOperationSuccess(array $response,
+  string $paymentId, string $operationLabel, bool $isPartialCancelAttempt): void`, the one place
+  that turns capture/cancel-specific business errors into their own catchable exception type
+  rather than a caller having to parse a generic `ApiException` message. A 2xx HTTP status alone
+  is not treated as success: the Unified API can return HTTP 200 with a non-`"0000"` `execCode`
+  (e.g. a duplicate/replayed request) — `assertOperationSuccess()` reuses `ExecCodeMapper` to
+  check the body's `execCode` even on a 2xx response, and only returns (letting
+  `capturePayment()`/`cancelPayment()` build their `CaptureOutput`/`CancellationOutput`) when both
+  the HTTP status is 2xx **and** the `execCode` maps to `PaymentOutcome::PAID` (or is absent).
+  Checked in this order: a
+  **404** throws `PaymentNotFoundException` (same as `getPayment()`/`createRefund()`); a **409**
+  throws `OperationConflictException` — a caller can tell a replay/race on the same payment apart
+  from a plain business rejection, and decide not to retry it blindly; the response's own
+  `message` field is then matched, case-insensitively, against `"duplicate"` / `"expired"` /
+  (`"already"` and `"captur"`) / `"not voidable"` / `"not capturable"` / (`"already"` and either
+  `"cancel"` or `"void"`) / `"exceed"`, throwing `MultipleCaptureNotAllowedException` (for
+  `capturePayment()`) or `OperationConflictException` (for `cancelPayment()`; either way, a
+  duplicate/replayed request signalled via `execCode` on an otherwise-2xx response, rather than
+  via HTTP 409) / `AuthorizationExpiredException` / `PaymentAlreadyCapturedException` /
+  `PaymentNotVoidableException` / `PaymentNotCapturableException` / `PaymentAlreadyCancelledException`
+  / `AmountExceedsAvailableException` respectively; an `execCode` in the `"4XXX"` bank/
+  supplier-rejection bucket (Payplug's own execCode catalog, the same convention `ExecCodeMapper`
+  already documents) throws `CardOperationException` (issuer refusal); a partial
+  `cancelPayment()` call (`$amount` given) rejected with `errorCategory ===
+  "INVALID_REQUEST"` throws `PartialCancellationNotAllowedException`.
+  `PaymentNotVoidableException`/`PaymentNotCapturableException` are deliberately
+  distinct from `PaymentAlreadyCapturedException`/`PaymentAlreadyCancelledException`: the Unified
+  API returns the identical `"not voidable"`/`"not capturable"` message regardless of which of
+  those two states caused it, so that message alone cannot distinguish "already captured" from
+  "already cancelled" — each of these two exceptions names the rejected operation
+  (`cancelPayment()`/`capturePayment()`) rather than guessing a cause the API itself doesn't
+  disambiguate. Anything else falls back to a generic `ApiException` carrying the HTTP status
+  (and the `execCode`, when one was present, since a 2xx status alone would otherwise read as
+  contradicting a "failed" message), same as every other method
+  on this service. The `message`-keyword half of this classification (`"duplicate"` through
+  `"exceed"`) lives in its own private `throwForMessageKeyword()`, factored out of
+  `assertOperationSuccess()` to keep the latter's cognitive complexity down — a SonarCloud
+  quality-gate concern, not a behavior change.
+
+  True idempotency (no double capture on a replayed request) is not something this service can
+  provide on its own: UPC keeps no persistent state, that's `IPaymentRepository`'s job. What this
+  ticket contributes is normalizing the API's own signal for "this already happened"
+  (`OperationConflictException`/`PaymentAlreadyCapturedException`/`PaymentAlreadyCancelledException`)
+  into distinct, catchable types, so a CMS plugin's own idempotency layer — the same
+  `IPaymentRepository`/`ILock` pairing already required for webhook processing (see
+  `WebhookNotificationHelper` above) — can recognize a replay and no-op it instead of either
+  double-processing or surfacing a confusing generic error.
+
+  `capturedAmount`/`requestedAmount` on `CaptureOutput` and `cancelledAmount`/`requestedAmount` on
+  `CancellationOutput` are read straight off the response's own `amount`/`requestedAmount` fields
+  via two new private helpers, `extractTopLevelString()`/`extractTopLevelInt()` (one-level
+  counterparts to the existing `extractNestedString()`, same null-on-anything-unexpected
+  reasoning) — also reused by `assertOperationSuccess()` itself for `execCode`/`errorCategory`/
+  `message`, and by `createPayment()` for the new `maxCaptureDate`/`remainingCapturableAmount`
+  fields on `PaymentOutput` (see `Output/` above). `createPayment()` itself now also determines
+  `$isAuthorizationOnly` from whichever concrete DTO it validated (`!$dto->common->capture`) to
+  decide whether `remainingCapturableAmount` is populated at all.
+
+  Matching unit tests for `capturePayment()`/`cancelPayment()` in `tests/Services/` cover: a full
+  and a partial operation, `extraData`, payment-id URL-encoding, both local pre-call validation
+  exceptions, the 404/409/issuer-refusal/partial-cancellation-not-allowed/expired/already-captured/
+  already-cancelled/not-voidable/not-capturable/amount-exceeds-available paths, the generic
+  `ApiException` fallback, and the
+  401-retry-then-normalize behavior inherited from `AbstractUnifiedApiService`. Two integration
+  tests in `tests/Integration/` drive real capture/cancel requests against the same
+  `UPC_IT_PAYMENT_ID` fixture `testGetPaymentFetchesARealFixturePayment()` already relies on being
+  `'CAPTURED'` — since that fixture is already fully captured, both requests are expected to be
+  rejected by the API, which is what proves the auth/URL/JSON wiring end-to-end without mutating
+  shared fixture state (same precedent as `createRefund()`'s own integration test); the exact
+  exception type these two tests get back is deliberately not asserted narrowly, only that some
+  `PayplugException` carrying a 4xx/5xx code came back.
 - `Traits/` is a category of its own — split out from `Dto/` once `PaymentRequestPayload`
   (moved to `Contracts/`, see that bullet above) and two traits no longer read as DTO input/output
   shapes themselves, just internal plumbing shared across DTOs. Holds two traits.
@@ -878,9 +1051,13 @@ running Docker daemon. The image builds automatically the first time any target 
   `extraData` (each when non-null), `billing`/`shipping` (each set directly from
   `$this->common->billing->toArray()`/`$this->common->shipping->toArray()`, only when non-null —
   no additional wrapping here, since `BillingDto`/`ShippingDto`'s own `toArray()` already produces
-  the exact body value, `address` sub-object included), and finally a `redirect` object nesting
-  `successUrl`/`cancelUrl` (only when at least one of the two is non-null) — every field either
-  DTO's body needs besides its own payment-method-specific piece. `OmitsNullPropertiesFromArray`
+  the exact body value, `address` sub-object included), a `redirect` object nesting
+  `successUrl`/`cancelUrl` (only when at least one of the two is non-null), and, added for the
+  authorization/capture/cancellation lifecycle ticket, a top-level `partialAuthorization` (only
+  when `$this->common->partialAuthorization` is non-null) and an `operation` object nesting
+  `authorizationType` (only when `$this->common->authorizationType` is non-null) — every field
+  either DTO's body needs besides its own payment-method-specific piece.
+  `OmitsNullPropertiesFromArray`
   is the other trait — shared by every "plain public scalar properties, each keyed by its own
   property name" value object in `Dto/` (`AddressDto`, `ContactDto`, `ShippingScheduleDto`) — its
   `toArrayOmittingNulls()` does `array_filter(get_object_vars($this), ...)`, replacing what each of

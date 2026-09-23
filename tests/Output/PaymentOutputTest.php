@@ -28,4 +28,20 @@ final class PaymentOutputTest extends TestCase
         self::assertNull($output->redirectHtml);
         self::assertNull($output->aliasId);
     }
+
+    public function testConstructorDefaultsMaxCaptureDateAndRemainingCapturableAmountToNull(): void
+    {
+        $output = new PaymentOutput(200, '{"id":"pay_123"}', null, null, null);
+
+        self::assertNull($output->maxCaptureDate);
+        self::assertNull($output->remainingCapturableAmount);
+    }
+
+    public function testConstructorAssignsMaxCaptureDateAndRemainingCapturableAmountWhenProvided(): void
+    {
+        $output = new PaymentOutput(200, '{"id":"pay_123"}', null, null, null, '2026-09-25T12:00:00Z', 700);
+
+        self::assertSame('2026-09-25T12:00:00Z', $output->maxCaptureDate);
+        self::assertSame(700, $output->remainingCapturableAmount);
+    }
 }
