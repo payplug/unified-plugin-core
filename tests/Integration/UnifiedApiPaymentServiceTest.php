@@ -7,6 +7,7 @@ namespace PayplugUnifiedCore\Tests\Integration;
 use PayplugUnifiedCore\Auth\OAuth2Client;
 use PayplugUnifiedCore\Auth\TokenManager;
 use PayplugUnifiedCore\Exceptions\ApiException;
+use PayplugUnifiedCore\Exceptions\PayplugException;
 use PayplugUnifiedCore\Services\UnifiedApiPaymentService;
 use PayplugUnifiedCore\Tests\Integration\Support\CurlHttpClient;
 use PayplugUnifiedCore\Tests\Integration\Support\InMemoryTokenCache;
@@ -190,6 +191,102 @@ final class UnifiedApiPaymentServiceTest extends TestCase
         } catch (ApiException $e) {
             self::assertSame(400, $e->getCode());
         }
+    }
+
+    /**
+     * UPC_IT_PAYMENT_ID is already fully captured (see testGetPaymentFetchesARealFixturePayment's
+     * own 'CAPTURED' assertion), so a capture attempt against it is expected to be rejected by the
+     * API regardless of amount — this drives the real capturePayment() request all the way to the
+     * staging Unified API and proves the auth/URL/JSON wiring end-to-end via that rejection,
+     * without needing (or being able to safely create) a fresh, still-open authorization.
+     *
+     * The exact exception type this rejection normalizes to is not asserted narrowly: capture
+     * error classification beyond HTTP status codes is a best-effort mapping pending confirmation
+     * against a real response (see UnifiedApiPaymentService::assertOperationSuccess()) — only that
+     * some PayplugException with a 4xx/5xx code came back, i.e. that the request actually reached
+     * the API and was rejected rather than the client throwing before ever sending it.
+     */
+    public function testCapturePaymentIsRejectedByTheApiForAnAlreadyCapturedFixturePayment(): void
+    {
+        $env = $this->requireEnv([
+            'UPC_IT_OAUTH_BASE_URL',
+            'UPC_IT_OAUTH_SCOPE',
+            'UPC_IT_OAUTH_AUDIENCE',
+            'UPC_IT_CLIENT_ID',
+            'UPC_IT_CLIENT_SECRET',
+            'UPC_IT_UNIFIED_API_BASE_URL',
+            'UPC_IT_ACCOUNT_ID',
+            'UPC_IT_PAYMENT_ID',
+        ]);
+
+        if ($env === null) {
+            return;
+        }
+
+        $service = $this->makeService($env);
+
+        try {
+            $service->capturePayment($env['UPC_IT_PAYMENT_ID'], $env['UPC_IT_ACCOUNT_ID'], 'upc-it-capture-test', 'UPC integration test capture');
+            self::fail('Expected the Unified API to reject a capture on an already-captured payment.');
+        } catch (PayplugException $e) {
+            self::assertGreaterThanOrEqual(400, $e->getCode());
+        }
+    }
+
+    /**
+     * Same reasoning as testCapturePaymentIsRejectedByTheApiForAnAlreadyCapturedFixturePayment —
+     * UPC_IT_PAYMENT_ID is already captured, so a cancellation attempt is expected to be rejected,
+     * which is exactly what proves the wiring without mutating the shared fixture.
+     */
+    public function testCancelPaymentIsRejectedByTheApiForAnAlreadyCapturedFixturePayment(): void
+    {
+        $env = $this->requireEnv([
+            'UPC_IT_OAUTH_BASE_URL',
+            'UPC_IT_OAUTH_SCOPE',
+            'UPC_IT_OAUTH_AUDIENCE',
+            'UPC_IT_CLIENT_ID',
+            'UPC_IT_CLIENT_SECRET',
+            'UPC_IT_UNIFIED_API_BASE_URL',
+            'UPC_IT_ACCOUNT_ID',
+            'UPC_IT_PAYMENT_ID',
+        ]);
+
+        if ($env === null) {
+            return;
+        }
+
+        $service = $this->makeService($env);
+
+        try {
+            $service->cancelPayment($env['UPC_IT_PAYMENT_ID'], $env['UPC_IT_ACCOUNT_ID'], 'upc-it-cancel-test', 'UPC integration test cancellation');
+            self::fail('Expected the Unified API to reject a cancellation on an already-captured payment.');
+        } catch (PayplugException $e) {
+            self::assertGreaterThanOrEqual(400, $e->getCode());
+        }
+    }
+
+    /**
+     * @param array<string, string> $env
+     */
+    private function makeService(array $env): UnifiedApiPaymentService
+    {
+        $httpClient = new CurlHttpClient();
+        $oauth2Client = new OAuth2Client(
+            $httpClient,
+            $env['UPC_IT_OAUTH_BASE_URL'],
+            'https://merchant.example.com/callback',
+            $env['UPC_IT_OAUTH_SCOPE'],
+            $env['UPC_IT_OAUTH_AUDIENCE']
+        );
+        $tokenManager = new TokenManager(new InMemoryTokenCache(), $oauth2Client);
+
+        return new UnifiedApiPaymentService(
+            $httpClient,
+            $tokenManager,
+            $env['UPC_IT_UNIFIED_API_BASE_URL'],
+            $env['UPC_IT_CLIENT_ID'],
+            $env['UPC_IT_CLIENT_SECRET']
+        );
     }
 
     /**

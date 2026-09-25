@@ -18,9 +18,10 @@ namespace PayplugUnifiedCore\Traits;
  * omitted entirely when null or empty, since only a submerchant-routed account has one.
  * `billing`/`shipping` are each sent as-is from `BillingDto::toArray()`/`ShippingDto::toArray()`
  * (which already nest their own composed `AddressDto` under an `"address"` key) — this method
- * does no additional wrapping of its own. Used via `use` rather than a shared abstract base class,
- * since both DTOs are otherwise unrelated `final class`es with no other reason to share a type
- * hierarchy.
+ * does no additional wrapping of its own. `partialAuthorization` is top-level; `authorizationType`
+ * nests under its own `"operation"` object. Both omitted when not set. Used via `use` rather than
+ * a shared abstract base class, since both DTOs are otherwise unrelated `final class`es with no
+ * other reason to share a type hierarchy.
  *
  * Assumes the using class declares `CommonFieldsDto $common`, `?BrowserDto $browser`, and
  * `?CustomerDto $customer` properties with those exact names — both current users already do, as
@@ -55,6 +56,17 @@ trait BuildsCommonPayloadBody
         $body['orderId'] = $this->common->orderId;
         $body['description'] = $this->common->description;
         $body['capture'] = $this->common->capture;
+
+        // Omitted entirely when not set.
+        if ($this->common->partialAuthorization !== null) {
+            $body['partialAuthorization'] = $this->common->partialAuthorization;
+        }
+
+        // Top-level "partialAuthorization" above vs this nested "operation" object: two distinct,
+        // independently-optional fields.
+        if ($this->common->authorizationType !== null) {
+            $body['operation'] = ['authorizationType' => $this->common->authorizationType];
+        }
 
         foreach ($paymentMethodSpecificFields as $key => $value) {
             $body[$key] = $value;

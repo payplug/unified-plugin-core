@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PayplugUnifiedCore\Tests\Dto;
 
+use PayplugUnifiedCore\DataValues\AuthorizationType;
 use PayplugUnifiedCore\Dto\AddressDto;
 use PayplugUnifiedCore\Dto\BillingDto;
 use PayplugUnifiedCore\Dto\BrowserDto;
@@ -67,6 +68,35 @@ final class PaymentDtoTest extends TestCase
         $dto = new PaymentDto($common, 'alias_789', 'ONE_CLICK');
 
         self::assertFalse($dto->createPayloadBody()['capture']);
+    }
+
+    public function testCreatePayloadBodyIncludesPartialAuthorizationAsTopLevelKeyWhenProvided(): void
+    {
+        $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789');
+        $common->capture = false;
+        $common->partialAuthorization = true;
+
+        $dto = new PaymentDto($common, 'alias_789', 'ONE_CLICK');
+
+        self::assertTrue($dto->createPayloadBody()['partialAuthorization']);
+    }
+
+    public function testCreatePayloadBodyOmitsPartialAuthorizationWhenNotProvided(): void
+    {
+        $dto = new PaymentDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789'), 'alias_789', 'ONE_CLICK');
+
+        self::assertArrayNotHasKey('partialAuthorization', $dto->createPayloadBody());
+    }
+
+    public function testCreatePayloadBodyNestsAuthorizationTypeUnderOperationWhenProvided(): void
+    {
+        $common = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789');
+        $common->capture = false;
+        $common->authorizationType = AuthorizationType::PRE_AUTHORIZATION;
+
+        $dto = new PaymentDto($common, 'alias_789', 'ONE_CLICK');
+
+        self::assertSame(['authorizationType' => AuthorizationType::PRE_AUTHORIZATION], $dto->createPayloadBody()['operation']);
     }
 
     public function testCreatePayloadBodyMergesAliasIdWithCallerSuppliedPaymentMethodDetails(): void
