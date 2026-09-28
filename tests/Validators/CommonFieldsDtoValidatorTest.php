@@ -71,6 +71,7 @@ final class CommonFieldsDtoValidatorTest extends TestCase
     public function testValidatePassesForEveryValidAuthorizationType(string $authorizationType): void
     {
         $dto = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789');
+        $dto->capture = false;
         $dto->authorizationType = $authorizationType;
 
         CommonFieldsDtoValidator::validate($dto);
@@ -103,7 +104,41 @@ final class CommonFieldsDtoValidatorTest extends TestCase
     public function testValidatePassesWhenAuthorizationTypeIsUppercase(): void
     {
         $dto = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789');
+        $dto->capture = false;
         $dto->authorizationType = 'FINAL_AUTHORIZATION';
+
+        CommonFieldsDtoValidator::validate($dto);
+
+        $this->expectNotToPerformAssertions();
+    }
+
+    public function testValidateThrowsWhenAuthorizationTypeIsSetAlongsideCaptureTrue(): void
+    {
+        $dto = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789');
+        $dto->authorizationType = AuthorizationType::PRE_AUTHORIZATION;
+
+        $this->expectException(InvalidCommonFieldsException::class);
+        $this->expectExceptionMessage('authorizationType is only meaningful when capture is false.');
+
+        CommonFieldsDtoValidator::validate($dto);
+    }
+
+    public function testValidateThrowsWhenPartialAuthorizationIsSetAlongsideCaptureTrue(): void
+    {
+        $dto = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789');
+        $dto->partialAuthorization = true;
+
+        $this->expectException(InvalidCommonFieldsException::class);
+        $this->expectExceptionMessage('partialAuthorization is only meaningful when capture is false.');
+
+        CommonFieldsDtoValidator::validate($dto);
+    }
+
+    public function testValidatePassesWhenPartialAuthorizationIsSetAlongsideCaptureFalse(): void
+    {
+        $dto = new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789');
+        $dto->capture = false;
+        $dto->partialAuthorization = true;
 
         CommonFieldsDtoValidator::validate($dto);
 
