@@ -164,6 +164,11 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
      */
     public function createPayment(PaymentRequestPayload $dto): PaymentOutput
     {
+        // $isAuthorizationOnly is computed per-branch rather than once after this block: `common`
+        // isn't part of the PaymentRequestPayload interface (only createPayloadBody() is), so
+        // PHPStan's type narrowing from the instanceof checks below is lost as soon as $dto is
+        // treated as the interface type again — accessing ->common needs to happen while $dto is
+        // still narrowed to the concrete HostedFieldDto/PaymentDto type.
         if ($dto instanceof HostedFieldDto) {
             HostedFieldDtoValidator::validate($dto);
             $isAuthorizationOnly = !$dto->common->capture;
@@ -366,7 +371,10 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
      * $currency is required by the API whenever $amount is given (a partial capture) and is sent
      * only when non-null and non-empty, same as createRefund().
      *
-     * @throws InvalidCaptureRequestException if $orderId or $description is empty.
+     * @throws InvalidCaptureRequestException if $orderId or $description is empty, or if $amount
+     *                      is given and $currency is empty — the API requires currency alongside a
+     *                      partial capture's amount, so this is checked locally for the same reason
+     *                      InvalidRefundRequestException exists (avoiding an opaque HTTP 400).
      * @throws CaptureAmountException if $amount is given and is zero or negative.
      * @throws PaymentNotFoundException on HTTP 404.
      * @throws OperationConflictException on HTTP 409.
@@ -375,6 +383,9 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
      *                      than once.
      * @throws AuthorizationExpiredException|PaymentNotCapturableException|AmountExceedsAvailableException
      *                      see assertOperationSuccess().
+     * @throws PaymentAlreadyCancelledException|PaymentNotVoidableException if the underlying
+     *                      message-keyword classification (shared with cancelPayment(), not gated
+     *                      by operation) matches one of those cancellation-labeled signals instead.
      * @throws CardOperationException if the issuer refused the capture.
      * @throws ApiException fallback for any other non-2xx status or malformed response.
      */
@@ -392,6 +403,7 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
 
         if ($amount !== null) {
             Assert::positive($amount, 'amount', CaptureAmountException::class);
+            Assert::notEmpty((string) $currency, 'currency', InvalidCaptureRequestException::class);
         }
 
         $url = $this->baseUrl . \sprintf(self::CAPTURE_PATH, rawurlencode($paymentId));
@@ -438,14 +450,32 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
      * required by the API whenever $amount is given and is sent only when non-null and
      * non-empty, same as createRefund().
      *
-     * @throws InvalidCancellationRequestException if $orderId or $description is empty.
+     * @throws InvalidCancellationRequestException if $orderId or $description is empty, or if
+     *                      $amount is given and $currency is empty — the API requires currency
+     *                      alongside a partial cancellation's amount, checked locally for the same
+     *                      reason InvalidRefundRequestException exists (avoiding an opaque HTTP
+     *                      400). Note: $currency being empty and $amount not matching the exact
+     *                      remaining authorized-but-uncaptured balance (see above) are both plausible
+     *                      causes of the API's own errorCategory "INVALID_REQUEST" on a partial
+     *                      cancellation — this local check only rules out the former; the latter
+     *                      still surfaces as PartialCancellationNotAllowedException below, which is
+     *                      a known approximation (see that exception's @throws note).
      * @throws CancellationAmountException if $amount is given and is zero or negative.
      * @throws PaymentNotFoundException on HTTP 404.
      * @throws OperationConflictException on HTTP 409.
-     * @throws PartialCancellationNotAllowedException if partial cancellation isn't enabled on
-     *                      this account's contract.
+     * @throws PartialCancellationNotAllowedException if a partial cancellation (amount given) is
+     *                      rejected with errorCategory "INVALID_REQUEST" — in practice this is most
+     *                      often "partial cancellation is not enabled on this account's contract",
+     *                      but the API does not expose a signal distinguishing that from a rejected
+     *                      $amount (not the exact remaining authorized-but-uncaptured balance): both
+     *                      surface identically as errorCategory "INVALID_REQUEST" and are normalized
+     *                      to this same exception type. A caller cannot assume the contract is the
+     *                      cause without also having ruled out an amount mismatch.
      * @throws AuthorizationExpiredException|PaymentAlreadyCancelledException|PaymentNotVoidableException|AmountExceedsAvailableException
      *                      see assertOperationSuccess().
+     * @throws PaymentAlreadyCapturedException|PaymentNotCapturableException if the underlying
+     *                      message-keyword classification (shared with capturePayment(), not gated
+     *                      by operation) matches one of those capture-labeled signals instead.
      * @throws CardOperationException if the issuer refused the cancellation.
      * @throws ApiException fallback for any other non-2xx status or malformed response.
      */
@@ -463,6 +493,7 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
 
         if ($amount !== null) {
             Assert::positive($amount, 'amount', CancellationAmountException::class);
+            Assert::notEmpty((string) $currency, 'currency', InvalidCancellationRequestException::class);
         }
 
         $url = $this->baseUrl . \sprintf(self::CANCEL_PATH, rawurlencode($paymentId));
@@ -504,26 +535,53 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
      * enough to consider the operation successful: the Unified API can return HTTP 200 with a
      * non-"0000" execCode (e.g. a duplicate/replayed request) — that must still be treated as a
      * failure and classified, not returned to the caller as a successful CaptureOutput/
-     * CancellationOutput. Checked in order: 404 → not found; 409 → conflict; "message" keyword
-     * match → duplicate / expired / not voidable / not capturable / already captured / already
-     * cancelled / amount exceeded; execCode "4XXX" → issuer refusal; partial cancel rejected as
-     * errorCategory INVALID_REQUEST → not allowed; else generic ApiException. "not voidable"/
-     * "not capturable" are checked ahead of "already captured"/"already cancelled" rather than
-     * after: "capturable"/"voidable" both contain the bare substrings ("captur"/"void") those
-     * later checks match on, so a message combining "already" with "not capturable"/"not voidable"
-     * (e.g. "already voided and therefore not capturable") must resolve to the operation-specific
-     * exception, not be misread as asserting a captured/cancelled state it never actually claims.
-     * "not voidable"/"not capturable" each map to their own operation-specific exception rather
-     * than PaymentAlreadyCapturedException/PaymentAlreadyCancelledException for a second reason
-     * too: the same message is returned whether the payment was already captured or already
-     * cancelled, so it cannot be used to distinguish those two causes on its own. A "duplicate"
-     * message during a capture maps to
-     * MultipleCaptureNotAllowedException rather than OperationConflictException: on an
-     * authorization the account/processor does not allow capturing more than once, every capture
-     * after the first is rejected this way regardless of amount, orderId, or description, so it
-     * reflects "this authorization only supports one capture" rather than a literal replay of an
-     * identical request. The same message during a cancellation still maps to
-     * OperationConflictException.
+     * CancellationOutput. Checked in order: 404 → not found; 409 → conflict; "duplicate" in the
+     * message → duplicate/replay; execCode "4XXX" → issuer refusal; remaining "message" keyword
+     * match → expired / not voidable / not capturable / already captured / already cancelled /
+     * amount exceeded; partial cancel rejected as errorCategory INVALID_REQUEST → not allowed;
+     * else generic ApiException.
+     *
+     * The "duplicate" keyword and the execCode "4XXX" issuer-refusal bucket are both checked
+     * *before* every other message keyword, for the same reason: "expired"/"exceed"/etc. are
+     * generic enough to also appear inside a genuine issuer decline's own wording (e.g. "Card
+     * expired.", "...limit exceeded."), which must resolve to CardOperationException — the
+     * execCode is the authoritative signal there, not a substring of the free-text message. Only
+     * "duplicate" is checked ahead of the execCode check, since a 4XXX execCode combined with a
+     * duplicate/replay message (e.g. execCode 4011) still means "this authorization only supports
+     * one capture", not "the issuer refused it".
+     *
+     * "not voidable"/"not capturable" are checked ahead of "already captured"/"already cancelled"
+     * rather than after: "capturable"/"voidable" both contain the bare substrings ("captur"/"void")
+     * those later checks match on, so a message combining "already" with "not capturable"/"not
+     * voidable" (e.g. "already voided and therefore not capturable") must resolve to the
+     * operation-specific exception, not be misread as asserting a captured/cancelled state it never
+     * actually claims. "not voidable"/"not capturable" each map to their own operation-specific
+     * exception rather than PaymentAlreadyCapturedException/PaymentAlreadyCancelledException for a
+     * second reason too: the same message is returned whether the payment was already captured or
+     * already cancelled, so it cannot be used to distinguish those two causes on its own.
+     *
+     * The "already captured"/"already cancelled" checks themselves match a contiguous phrase
+     * (via regex), not two independently co-occurring substrings: a message like "already been
+     * voided and cannot be captured" contains both "already" and "captur" (via "captured") but
+     * describes a cancelled payment, not a captured one — matching "already (been )?captured" as
+     * one phrase, rather than "already" and "captur" as separate substrings anywhere in the
+     * message, avoids that misclassification.
+     *
+     * A "duplicate" message during a capture maps to MultipleCaptureNotAllowedException rather
+     * than OperationConflictException: on an authorization the account/processor does not allow
+     * capturing more than once, every capture after the first is rejected this way regardless of
+     * amount, orderId, or description, so it reflects "this authorization only supports one
+     * capture" rather than a literal replay of an identical request. The same message during a
+     * cancellation still maps to OperationConflictException.
+     *
+     * Known gap, not handled here: a 2xx response carrying execCode "0002"/"0003" (WAITING_PROVIDER/
+     * WAITING_STATUS — non-terminal per ExecCodeMapper's own doc, same "Acceptation" category as
+     * "0001") is not distinguished from a genuine failure and falls through to the generic
+     * ApiException below, same as any other non-PAID execCode. Neither code has ever been observed
+     * on a capture/cancellation response; if one is, a caller retrying after this ApiException risks
+     * a double capture/cancellation once the pending operation resolves on its own — this would need
+     * the same non-terminal treatment ExecCodeMapper already gives "0001" (see its own class
+     * docblock) before it's safe to retry on.
      *
      * @param array{status: int, body: string} $response
      * @throws PaymentNotFoundException
@@ -563,7 +621,7 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
 
         $message = $this->extractTopLevelString($data, 'message');
 
-        $this->throwForMessageKeyword($message, $operationLabel, $response['status']);
+        $this->throwForDuplicateKeyword($message, $operationLabel, $response['status']);
 
         if ($execCode !== null && strpos($execCode, self::ISSUER_REFUSAL_EXEC_CODE_PREFIX) === 0) {
             throw new CardOperationException(
@@ -571,6 +629,8 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
                 $response['status']
             );
         }
+
+        $this->throwForMessageKeyword($message, $response['status']);
 
         $errorCategory = $this->extractTopLevelString($data, 'errorCategory');
 
@@ -594,13 +654,34 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
     }
 
     /**
-     * The "message" keyword half of assertOperationSuccess()'s classification, factored out to
-     * keep that method's cognitive complexity in check. A no-op when $message is null — the
-     * caller falls through to its own execCode/errorCategory checks and, ultimately, the generic
-     * ApiException.
+     * The "duplicate" keyword check, factored out and checked *before* assertOperationSuccess()'s
+     * execCode-4XXX issuer-refusal check: a duplicate/replayed request can itself carry a 4XXX
+     * execCode (e.g. 4011), and that combination must still mean "replay", not "issuer refusal".
+     * A no-op when $message is null.
      *
-     * @throws OperationConflictException
      * @throws MultipleCaptureNotAllowedException
+     * @throws OperationConflictException
+     */
+    private function throwForDuplicateKeyword(?string $message, string $operationLabel, int $status): void
+    {
+        if ($message === null || strpos(strtolower($message), 'duplicate') === false) {
+            return;
+        }
+
+        if ($operationLabel === 'capture') {
+            throw new MultipleCaptureNotAllowedException($message, $status);
+        }
+
+        throw new OperationConflictException($message, $status);
+    }
+
+    /**
+     * The remaining "message" keyword classification, checked only once the caller has already
+     * ruled out both "duplicate" and an issuer-refusal execCode — see assertOperationSuccess()'s
+     * own docblock for why generic keywords like "expired"/"exceed" must not be tested against an
+     * issuer decline's own wording. A no-op when $message is null — the caller falls through to
+     * its own errorCategory check and, ultimately, the generic ApiException.
+     *
      * @throws AuthorizationExpiredException
      * @throws PaymentAlreadyCapturedException
      * @throws PaymentNotVoidableException
@@ -608,7 +689,7 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
      * @throws PaymentAlreadyCancelledException
      * @throws AmountExceedsAvailableException
      */
-    private function throwForMessageKeyword(?string $message, string $operationLabel, int $status): void
+    private function throwForMessageKeyword(?string $message, int $status): void
     {
         if ($message === null) {
             return;
@@ -616,24 +697,10 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
 
         $lowerMessage = strtolower($message);
 
-        if (strpos($lowerMessage, 'duplicate') !== false) {
-            if ($operationLabel === 'capture') {
-                throw new MultipleCaptureNotAllowedException($message, $status);
-            }
-
-            throw new OperationConflictException($message, $status);
-        }
-
         if (strpos($lowerMessage, 'expired') !== false) {
             throw new AuthorizationExpiredException($message, $status);
         }
 
-        // Checked before the "already" branches below: "capturable"/"voidable" both contain the
-        // bare substrings "captur"/"void" those branches match on, so a message combining "not
-        // capturable"/"not voidable" with "already" (e.g. "already voided and therefore not
-        // capturable") must resolve to the operation-specific exception first, not be
-        // misclassified as an already-captured/already-cancelled state the message never actually
-        // asserts.
         if (strpos($lowerMessage, 'not voidable') !== false) {
             throw new PaymentNotVoidableException($message, $status);
         }
@@ -642,11 +709,14 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
             throw new PaymentNotCapturableException($message, $status);
         }
 
-        if (strpos($lowerMessage, 'already') !== false && strpos($lowerMessage, 'captur') !== false) {
+        // Matched as a contiguous phrase, not "already" and "captur"/"cancel"/"void" as
+        // independently co-occurring substrings — see assertOperationSuccess()'s own docblock for
+        // why (e.g. "already been voided and cannot be captured" must not match "already captured").
+        if (preg_match('/already\s+(?:been\s+)?captured/', $lowerMessage) === 1) {
             throw new PaymentAlreadyCapturedException($message, $status);
         }
 
-        if (strpos($lowerMessage, 'already') !== false && (strpos($lowerMessage, 'cancel') !== false || strpos($lowerMessage, 'void') !== false)) {
+        if (preg_match('/already\s+(?:been\s+)?(?:cancell?ed|voided)/', $lowerMessage) === 1) {
             throw new PaymentAlreadyCancelledException($message, $status);
         }
 
