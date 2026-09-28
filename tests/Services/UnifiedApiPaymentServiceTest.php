@@ -1178,6 +1178,7 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
                     'orderId' => 'order_1',
                     'description' => 'Capture for order order_1',
                     'amount' => 300,
+                    'currency' => 'EUR',
                 ],
                 ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
             )
@@ -1185,7 +1186,7 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
 
         $service = $this->makeService($httpClient);
 
-        $result = $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1', 300);
+        $result = $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1', 300, null, 'EUR');
 
         self::assertSame(300, $result->capturedAmount);
         self::assertSame(700, $result->remainingCapturableAmount);
@@ -1214,6 +1215,12 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
         $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1', 300, null, 'USD');
     }
 
+    /**
+     * $currency is only required locally when $amount is given (see
+     * testCapturePaymentThrowsInvalidCaptureRequestExceptionForAPartialAmountWithoutCurrency
+     * below); for a full capture (no $amount), '' is still treated the same as omitted, same
+     * convention as $extraData.
+     */
     public function testCapturePaymentOmitsCurrencyFromTheBodyWhenItIsAnEmptyString(): void
     {
         $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
@@ -1225,7 +1232,6 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
                     'account' => ['id' => 'acc_123'],
                     'orderId' => 'order_1',
                     'description' => 'Capture for order order_1',
-                    'amount' => 300,
                 ],
                 ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
             )
@@ -1233,6 +1239,30 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
 
         $service = $this->makeService($httpClient);
 
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1', null, null, '');
+    }
+
+    public function testCapturePaymentThrowsInvalidCaptureRequestExceptionForAPartialAmountWithoutCurrency(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldNotReceive('postJson');
+
+        $service = $this->makeService($httpClient, 'https://api.payplug.com', $this->makeTokenManagerExpectingNoInteraction());
+
+        $this->expectException(InvalidCaptureRequestException::class);
+        $this->expectExceptionMessage('currency must not be empty.');
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1', 300);
+    }
+
+    public function testCapturePaymentThrowsInvalidCaptureRequestExceptionForAPartialAmountWithAnEmptyStringCurrency(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldNotReceive('postJson');
+
+        $service = $this->makeService($httpClient, 'https://api.payplug.com', $this->makeTokenManagerExpectingNoInteraction());
+
+        $this->expectException(InvalidCaptureRequestException::class);
+        $this->expectExceptionMessage('currency must not be empty.');
         $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1', 300, null, '');
     }
 
@@ -1375,6 +1405,40 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
         $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1');
     }
 
+    /**
+     * Regression test: a generic keyword like "expired" can appear inside an issuer's own decline
+     * wording. When an execCode "4XXX" (issuer refusal) is present, it must take precedence over
+     * the message-keyword classification, resolving to CardOperationException rather than
+     * AuthorizationExpiredException.
+     */
+    public function testCapturePaymentThrowsCardOperationExceptionEvenWhenTheMessageContainsExpiredAlongsideAnIssuerRefusalExecCode(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 400, 'body' => json_encode(['execCode' => '4005', 'message' => 'Card expired.'])]);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(CardOperationException::class);
+        $this->expectExceptionMessage('Card expired.');
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1');
+    }
+
+    /**
+     * Regression test: a duplicate/replay on an authorization that only supports one capture can
+     * itself carry an issuer-refusal-shaped execCode (4011). "duplicate" must still take priority
+     * over the execCode-4XXX check, same as before this fix.
+     */
+    public function testCapturePaymentThrowsMultipleCaptureNotAllowedExceptionEvenWithA4xxxExecCode(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 400, 'body' => json_encode(['execCode' => '4011', 'message' => 'Duplicate request.'])]);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(MultipleCaptureNotAllowedException::class);
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1');
+    }
+
     public function testCapturePaymentThrowsPaymentAlreadyCapturedExceptionWhenTheMessageIndicatesAlreadyCaptured(): void
     {
         $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
@@ -1386,6 +1450,24 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
         $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1');
     }
 
+    /**
+     * Regression test: "already" and "captur" can co-occur in a message that does NOT describe an
+     * already-captured payment — here the payment was cancelled, and "captur" only appears inside
+     * "cannot be captured". Matching "already captured" as a contiguous phrase, rather than
+     * "already" and "captur" as independently co-occurring substrings, must resolve this to
+     * PaymentAlreadyCancelledException.
+     */
+    public function testCapturePaymentThrowsPaymentAlreadyCancelledExceptionWhenTheMessageDescribesAVoidedPaymentThatCannotBeCaptured(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 400, 'body' => json_encode(['message' => 'Payment has already been voided and cannot be captured.'])]);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(PaymentAlreadyCancelledException::class);
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1');
+    }
+
     public function testCapturePaymentThrowsPaymentNotCapturableExceptionWhenTheMessageIndicatesNotCapturable(): void
     {
         $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
@@ -1394,7 +1476,7 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
         $service = $this->makeService($httpClient);
 
         $this->expectException(PaymentNotCapturableException::class);
-        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1', 500);
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1', 500, null, 'EUR');
     }
 
     /**
@@ -1421,7 +1503,7 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
         $service = $this->makeService($httpClient);
 
         $this->expectException(AmountExceedsAvailableException::class);
-        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1', 500);
+        $service->capturePayment('pay_123', 'acc_123', 'order_1', 'Capture for order order_1', 500, null, 'EUR');
     }
 
     public function testCapturePaymentThrowsApiExceptionOnNonSuccessStatusWithNoRecognizedSignal(): void
@@ -1525,6 +1607,7 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
                     'orderId' => 'order_1',
                     'description' => 'Cancellation for order order_1',
                     'amount' => 400,
+                    'currency' => 'EUR',
                 ],
                 ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
             )
@@ -1532,7 +1615,7 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
 
         $service = $this->makeService($httpClient);
 
-        $result = $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1', 400);
+        $result = $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1', 400, null, 'EUR');
 
         self::assertSame(400, $result->cancelledAmount);
         self::assertSame(600, $result->remainingCancellableAmount);
@@ -1561,6 +1644,12 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
         $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1', 400, null, 'USD');
     }
 
+    /**
+     * $currency is only required locally when $amount is given (see
+     * testCancelPaymentThrowsInvalidCancellationRequestExceptionForAPartialAmountWithoutCurrency
+     * below); for a full cancellation (no $amount), '' is still treated the same as omitted, same
+     * convention as $extraData.
+     */
     public function testCancelPaymentOmitsCurrencyFromTheBodyWhenItIsAnEmptyString(): void
     {
         $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
@@ -1572,7 +1661,6 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
                     'account' => ['id' => 'acc_123'],
                     'orderId' => 'order_1',
                     'description' => 'Cancellation for order order_1',
-                    'amount' => 400,
                 ],
                 ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
             )
@@ -1580,6 +1668,30 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
 
         $service = $this->makeService($httpClient);
 
+        $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1', null, null, '');
+    }
+
+    public function testCancelPaymentThrowsInvalidCancellationRequestExceptionForAPartialAmountWithoutCurrency(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldNotReceive('postJson');
+
+        $service = $this->makeService($httpClient, 'https://api.payplug.com', $this->makeTokenManagerExpectingNoInteraction());
+
+        $this->expectException(InvalidCancellationRequestException::class);
+        $this->expectExceptionMessage('currency must not be empty.');
+        $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1', 400);
+    }
+
+    public function testCancelPaymentThrowsInvalidCancellationRequestExceptionForAPartialAmountWithAnEmptyStringCurrency(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldNotReceive('postJson');
+
+        $service = $this->makeService($httpClient, 'https://api.payplug.com', $this->makeTokenManagerExpectingNoInteraction());
+
+        $this->expectException(InvalidCancellationRequestException::class);
+        $this->expectExceptionMessage('currency must not be empty.');
         $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1', 400, null, '');
     }
 
@@ -1661,7 +1773,7 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
 
         $this->expectException(PartialCancellationNotAllowedException::class);
         $this->expectExceptionMessage('The operation is not allowed.');
-        $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1', 400);
+        $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1', 400, null, 'EUR');
     }
 
     /**
@@ -1684,6 +1796,24 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
     {
         $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
         $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 400, 'body' => json_encode(['message' => 'This payment has already been cancelled.'])]);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(PaymentAlreadyCancelledException::class);
+        $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1');
+    }
+
+    /**
+     * Regression test, cancelPayment() counterpart of the capturePayment() version above:
+     * "already" and "captur" can co-occur in a message that does NOT describe an already-captured
+     * payment — here the payment was voided, and "captur" only appears inside "cannot be
+     * captured". Matching "already captured" as a contiguous phrase must not misclassify this as
+     * PaymentAlreadyCapturedException.
+     */
+    public function testCancelPaymentThrowsPaymentAlreadyCancelledExceptionWhenTheMessageDescribesAVoidedPaymentThatCannotBeCaptured(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 400, 'body' => json_encode(['message' => 'Payment has already been voided and cannot be captured.'])]);
 
         $service = $this->makeService($httpClient);
 
@@ -1744,6 +1874,24 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
 
         $this->expectException(CardOperationException::class);
         $this->expectExceptionMessage('Refused by issuer.');
+        $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1');
+    }
+
+    /**
+     * Regression test, cancelPayment() counterpart of the capturePayment() version above: a
+     * generic keyword like "expired" can appear inside an issuer's own decline wording, and an
+     * execCode "4XXX" (issuer refusal) must take precedence, resolving to CardOperationException
+     * rather than AuthorizationExpiredException.
+     */
+    public function testCancelPaymentThrowsCardOperationExceptionEvenWhenTheMessageContainsExpiredAlongsideAnIssuerRefusalExecCode(): void
+    {
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 400, 'body' => json_encode(['execCode' => '4005', 'message' => 'Card expired.'])]);
+
+        $service = $this->makeService($httpClient);
+
+        $this->expectException(CardOperationException::class);
+        $this->expectExceptionMessage('Card expired.');
         $service->cancelPayment('pay_123', 'acc_123', 'order_1', 'Cancellation for order order_1');
     }
 

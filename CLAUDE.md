@@ -250,6 +250,25 @@ running Docker daemon. The image builds automatically the first time any target 
   `CancellationOutput` holds `status`/`body` plus `cancelledAmount`/`requestedAmount` and its own
   derived `remainingCancellableAmount`, read and computed the same way. Matching tests in
   `tests/Output/`.
+
+  Two caveats on these two derived fields, documented directly on each class rather than resolved
+  (flagged post-review, PRE-3670; neither confirmed against a real success response — only the
+  rejection path is covered by integration tests so far): (1) `CaptureOutput::$remainingCapturableAmount`'s
+  own reasoning above ("`requestedAmount` staying the fixed, originally authorized amount") is
+  itself unverified under a **partial authorization** specifically — if the capture response's
+  `requestedAmount` instead reflects the amount originally *requested* at creation rather than the
+  amount actually *authorized* (the two differ exactly when the issuer approved less than asked —
+  see `PaymentOutput::$remainingCapturableAmount` above, which does account for this at creation
+  time by preferring `amount` over `requestedAmount`), this field would overstate what remains
+  capturable after any capture against a partially-authorized payment. (2)
+  `CancellationOutput::$remainingCancellableAmount` doesn't subtract any amount already captured
+  against the authorization: `requestedAmount - cancelledAmount` is only correct when nothing was
+  captured first — e.g. 1000 authorized, 600 captured, a 400 cancellation of the remainder reports
+  `1000 - 400 = 600` remaining cancellable, when the true remaining balance is `0`. Given
+  `cancelPayment()`'s own documented requirement that `$amount` be the *exact* remaining balance
+  once any capture has occurred, neither field should be reused to build a follow-up
+  `capturePayment()`/`cancelPayment()` call without independently confirming the real remaining
+  balance.
 - `Dto/` is a category of its own — split out from `Models/` once more than one DTO was expected,
   rather than growing `Models/` indefinitely (see the top-level-categories bullet above). Holds
   ten classes, all assembled by the CMS plugin itself as input to a
@@ -539,7 +558,13 @@ running Docker daemon. The image builds automatically the first time any target 
   `CommonFieldsDto`, which by PRE-3590 is both `HostedFieldDto` and `PaymentDto`. Added for the
   authorization/capture/cancellation lifecycle ticket: an additional check rejecting a non-null
   `authorizationType` that isn't one of `AuthorizationType`'s constants (case-insensitively), same
-  `PaymentOutcome::isValid()`-against-`OperationData` precedent.
+  `PaymentOutcome::isValid()`-against-`OperationData` precedent. A second addition (fixed
+  post-review, PRE-3670): both `authorizationType` and `partialAuthorization` are documented as
+  "only meaningful alongside `capture === false`", but nothing enforced that — a caller could set
+  either on a direct payment (`capture === true`) for `BuildsCommonPayloadBody` to send anyway, for
+  the API to either ignore or reject with an opaque 400. `validate()` now rejects a non-null
+  `authorizationType`/`partialAuthorization` whenever `$dto->capture` is `true`, fail-fast, same as
+  every other cross-field rule this validator owns.
   `HostedFieldDtoValidator::validate(HostedFieldDto $dto): void` delegates to it (catching
   `InvalidCommonFieldsException` and wrapping it into `InvalidHostedFieldException`, so
   `createPayment()`'s existing `@throws InvalidHostedFieldException` contract for
@@ -954,7 +979,17 @@ running Docker daemon. The image builds automatically the first time any target 
   `account`/`orderId`/`description`/`amount`/`extraData`/`currency` fields refund already
   established this pattern for. `$currency`, like on `createRefund()`, is sent only when non-null
   and non-empty — required by the API whenever `$amount` is given (a partial capture/cancellation
-  without it is rejected with `"Invalid parameter."`). `CAPTURE_PATH`/`CANCEL_PATH`
+  without it is rejected with `"Invalid parameter."`) — and, since PRE-3670's post-review fix, this
+  is now also checked locally: `Assert::notEmpty((string) $currency, 'currency', ...)` runs
+  whenever `$amount !== null`, throwing `InvalidCaptureRequestException`/
+  `InvalidCancellationRequestException` before any HTTP call, same "avoid an opaque 400" reasoning
+  as the existing `orderId`/`description` checks. A full capture/cancellation (`$amount` omitted)
+  still treats an empty-string `$currency` the same as `null` (omitted from the body), matching
+  `$extraData`'s convention — the new check only fires alongside a given `$amount`. On
+  `cancelPayment()` specifically, this local check narrows but does not eliminate
+  `PartialCancellationNotAllowedException`'s own ambiguity (see below): a missing `$currency` is
+  now caught before the request is ever sent, but a rejected `$amount` (not the exact remaining
+  balance) still surfaces as that same exception. `CAPTURE_PATH`/`CANCEL_PATH`
   (`/api/payment-gateway/payments/%s/capture` and `/%s/void`) share `PAYMENT_PATH`/
   `REFUND_PATH`'s prefix. Omitting `$amount` on `cancelPayment()` only releases the full
   authorization when nothing has been captured against it yet — once any capture has occurred, a
@@ -963,6 +998,17 @@ running Docker daemon. The image builds automatically the first time any target 
   already captured/cancelled across prior calls is not tracked client-side: the
   Unified API itself rejects a cumulative amount exceeding what's available, so that business rule
   isn't duplicated here, same precedent as `createRefund()`'s amount handling.
+
+  `PartialCancellationNotAllowedException` is a known approximation, not a precise diagnosis
+  (flagged post-review, PRE-3670): the API signals a partial cancellation rejection with
+  `errorCategory === "INVALID_REQUEST"` regardless of whether the actual cause is "partial
+  cancellation isn't enabled on this account's contract" (this exception's stated purpose) or an
+  `$amount` that isn't the exact remaining authorized-but-uncaptured balance the same paragraph
+  above documents as required. Nothing in the response distinguishes the two, so both are
+  normalized to the same exception type — a caller cannot assume the contract is at fault without
+  independently ruling out an amount mismatch. Documented here rather than resolved, since no more
+  precise signal (a dedicated `errorCategory`/`execCode`/message) has been confirmed against a real
+  rejection for each cause separately.
 
   Both delegate their error handling to a shared private `assertOperationSuccess(array $response,
   string $paymentId, string $operationLabel, bool $isPartialCancelAttempt): void`, the one place
@@ -976,39 +1022,74 @@ running Docker daemon. The image builds automatically the first time any target 
   Checked in this order: a
   **404** throws `PaymentNotFoundException` (same as `getPayment()`/`createRefund()`); a **409**
   throws `OperationConflictException` — a caller can tell a replay/race on the same payment apart
-  from a plain business rejection, and decide not to retry it blindly; the response's own
-  `message` field is then matched, case-insensitively, against `"duplicate"` / `"expired"` /
-  `"not voidable"` / `"not capturable"` / (`"already"` and `"captur"`) / (`"already"` and either
-  `"cancel"` or `"void"`) / `"exceed"`, throwing `MultipleCaptureNotAllowedException` (for
+  from a plain business rejection, and decide not to retry it blindly; a `"duplicate"` keyword in
+  the response's own `message` field then throws `MultipleCaptureNotAllowedException` (for
   `capturePayment()`) or `OperationConflictException` (for `cancelPayment()`; either way, a
-  duplicate/replayed request signalled via `execCode` on an otherwise-2xx response, rather than
-  via HTTP 409) / `AuthorizationExpiredException` / `PaymentNotVoidableException` /
-  `PaymentNotCapturableException` / `PaymentAlreadyCapturedException` / `PaymentAlreadyCancelledException`
-  / `AmountExceedsAvailableException` respectively; an `execCode` in the `"4XXX"` bank/
-  supplier-rejection bucket (Payplug's own execCode catalog, the same convention `ExecCodeMapper`
-  already documents) throws `CardOperationException` (issuer refusal); a partial
+  duplicate/replayed request signalled via `execCode` on an otherwise-2xx response, rather than via
+  HTTP 409); an `execCode` in the `"4XXX"` bank/supplier-rejection bucket (Payplug's own execCode
+  catalog, the same convention `ExecCodeMapper` already documents) then throws
+  `CardOperationException` (issuer refusal); the response's own `message` field is then matched
+  again, case-insensitively, against `"expired"` / `"not voidable"` / `"not capturable"` /
+  (a contiguous `"already (been )?captured"` phrase) / (a contiguous `"already (been )?"` +
+  `"cancelled"`/`"canceled"`/`"voided"` phrase) / `"exceed"`, throwing `AuthorizationExpiredException`
+  / `PaymentNotVoidableException` / `PaymentNotCapturableException` / `PaymentAlreadyCapturedException`
+  / `PaymentAlreadyCancelledException` / `AmountExceedsAvailableException` respectively; a partial
   `cancelPayment()` call (`$amount` given) rejected with `errorCategory ===
-  "INVALID_REQUEST"` throws `PartialCancellationNotAllowedException`.
-  `"not voidable"`/`"not capturable"` are matched **before** the `"already"`-prefixed checks
-  rather than after (fixed post-review, PRE-3670): `"capturable"`/`"voidable"` both contain the
-  bare substrings (`"captur"`/`"void"`) those later checks match on, so a message combining
-  `"already"` with `"not capturable"`/`"not voidable"` (e.g. "already voided and therefore not
-  capturable") would otherwise be misread as asserting a captured/cancelled state the message
-  never actually claims — checking the operation-specific pair first closes that gap regardless of
-  what else the message says. `PaymentNotVoidableException`/`PaymentNotCapturableException` are
-  also deliberately
+  "INVALID_REQUEST"` throws `PartialCancellationNotAllowedException` (see its own known-approximation
+  caveat above).
+
+  **`"duplicate"` and the execCode `"4XXX"` bucket are both checked ahead of every other
+  `message` keyword (fixed post-review, PRE-3670)**: keywords like `"expired"`/`"exceed"` are
+  generic enough to also appear inside a genuine issuer decline's own wording (e.g. `"Card
+  expired."`, `"...limit exceeded."`), which must resolve to `CardOperationException` — the
+  execCode is the authoritative signal there, a substring of the free-text message is not. Only
+  `"duplicate"` is checked ahead of the execCode-`"4XXX"` check itself, since a duplicate/replayed
+  request against an authorization that only allows one capture can itself carry a `"4XXX"`-shaped
+  execCode (e.g. `4011`) and must still mean "this authorization only supports one capture", not
+  "the issuer refused it".
+
+  `"not voidable"`/`"not capturable"` are matched **before** the "already captured"/"already
+  cancelled" checks rather than after (fixed post-review, PRE-3670): `"capturable"`/`"voidable"`
+  both contain the bare substrings (`"captur"`/`"void"`) those later checks used to match on, so a
+  message combining `"already"` with `"not capturable"`/`"not voidable"` (e.g. "already voided and
+  therefore not capturable") would otherwise be misread as asserting a captured/cancelled state the
+  message never actually claims — checking the operation-specific pair first closes that gap
+  regardless of what else the message says. `PaymentNotVoidableException`/`PaymentNotCapturableException`
+  are also deliberately
   distinct from `PaymentAlreadyCapturedException`/`PaymentAlreadyCancelledException`: the Unified
   API returns the identical `"not voidable"`/`"not capturable"` message regardless of which of
   those two states caused it, so that message alone cannot distinguish "already captured" from
   "already cancelled" — each of these two exceptions names the rejected operation
   (`cancelPayment()`/`capturePayment()`) rather than guessing a cause the API itself doesn't
-  disambiguate. Anything else falls back to a generic `ApiException` carrying the HTTP status
+  disambiguate.
+
+  **The "already captured"/"already cancelled" checks themselves match a contiguous phrase via
+  regex, not two independently co-occurring substrings (fixed post-review, PRE-3670)**: even after
+  the `"not voidable"`/`"not capturable"` reordering above, a message like "already been voided and
+  cannot be captured" still contains both `"already"` and `"captur"` (via "captured") anywhere in
+  the string, but describes a cancelled payment, not a captured one. Matching
+  `/already\s+(?:been\s+)?captured/` (and the `"cancelled"`/`"canceled"`/`"voided"` equivalent) as
+  one contiguous phrase, rather than `"already"` and `"captur"`/`"cancel"`/`"void"` as separate
+  substrings anywhere in the message, avoids that misclassification.
+
+  Anything else falls back to a generic `ApiException` carrying the HTTP status
   (and the `execCode`, when one was present, since a 2xx status alone would otherwise read as
   contradicting a "failed" message), same as every other method
-  on this service. The `message`-keyword half of this classification (`"duplicate"` through
-  `"exceed"`) lives in its own private `throwForMessageKeyword()`, factored out of
-  `assertOperationSuccess()` to keep the latter's cognitive complexity down — a SonarCloud
-  quality-gate concern, not a behavior change.
+  on this service. This classification is split across two private methods:
+  `throwForDuplicateKeyword()` (the `"duplicate"` check, run before the execCode-`"4XXX"` check for
+  the reason above) and `throwForMessageKeyword()` (every other keyword, run after it) — factored
+  out of `assertOperationSuccess()` to keep its cognitive complexity down, a SonarCloud
+  quality-gate concern, not a behavior change on its own (the split follows directly from the
+  ordering fix above, which does change behavior).
+
+  **Known gap, not yet handled**: a 2xx response carrying execCode `"0002"`/`"0003"`
+  (`WAITING_PROVIDER`/`WAITING_STATUS` — non-terminal per `ExecCodeMapper`'s own doc, same
+  "Acceptation" category as `"0001"`) is not distinguished from a genuine failure here and falls
+  through to the generic `ApiException`, same as any other non-`PAID` execCode. Neither code has
+  ever been observed on a capture/cancellation response; if one is, a caller retrying after this
+  `ApiException` risks a double capture/cancellation once the pending operation resolves on its
+  own — this would need the same non-terminal treatment `ExecCodeMapper` already gives `"0001"`
+  before it's safe to retry on.
 
   True idempotency (no double capture on a replayed request) is not something this service can
   provide on its own: UPC keeps no persistent state, that's `IPaymentRepository`'s job. What this

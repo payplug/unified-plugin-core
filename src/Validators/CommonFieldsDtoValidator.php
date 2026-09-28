@@ -45,6 +45,19 @@ final class CommonFieldsDtoValidator
         if ($dto->authorizationType !== null && !AuthorizationType::isValid($dto->authorizationType)) {
             throw new InvalidCommonFieldsException(\sprintf('"%s" is not a valid AuthorizationType.', $dto->authorizationType));
         }
+
+        // Both fields are documented as only meaningful alongside capture === false (an
+        // authorization-only hold); nothing on CommonFieldsDto itself enforced that, so a caller
+        // could silently send either on a direct payment for the API to either ignore or reject
+        // with an opaque 400. Checked here, fail-fast, same as every other cross-field rule this
+        // validator already owns.
+        if ($dto->capture && $dto->authorizationType !== null) {
+            throw new InvalidCommonFieldsException('authorizationType is only meaningful when capture is false.');
+        }
+
+        if ($dto->capture && $dto->partialAuthorization !== null) {
+            throw new InvalidCommonFieldsException('partialAuthorization is only meaningful when capture is false.');
+        }
     }
 
     /**
