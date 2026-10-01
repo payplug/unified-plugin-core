@@ -484,6 +484,33 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
         self::assertNull($result->redirectUrl);
     }
 
+    public function testCreatePaymentSendsTheUnspecifiedIpv4AddressWhenTheBrowserIpIsIpv6(): void
+    {
+        $dto = HostedFieldDtoBuilder::valid()
+            ->withBrowser(new BrowserDto('2001:db8::8a2e:370:7334', 'https://shop.example.com/cart', 'Mozilla/5.0'))
+            ->build();
+
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')
+            ->once()
+            ->with(
+                'https://api.payplug.com/api/payment-gateway/payments',
+                Mockery::on(static function (array $body): bool {
+                    return ($body['browser'] ?? null) === [
+                        'ip' => '0.0.0.0',
+                        'referrer' => 'https://shop.example.com/cart',
+                        'userAgent' => 'Mozilla/5.0',
+                    ];
+                }),
+                ['Authorization' => 'Bearer cached-jwt', 'Content-Type' => 'application/json']
+            )
+            ->andReturn(['status' => 200, 'body' => json_encode(['id' => 'pay_123'])]);
+
+        $result = $this->makeService($httpClient)->createPayment($dto);
+
+        self::assertSame(200, $result->status);
+    }
+
     public function testCreatePaymentExtractsTheRedirectUrlWhenThreeDsIsPending(): void
     {
         $body = json_encode(['id' => 'pay_123', 'redirect' => ['url' => 'https://3ds.example.com/challenge']]);

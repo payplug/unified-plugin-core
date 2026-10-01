@@ -286,6 +286,15 @@ running Docker daemon. The image builds automatically the first time any target 
   present together or none" rule now: a partial `BrowserDto`/`CustomerDto` can't be constructed, so
   `HostedFieldDtoValidator` no longer needs to check for that shape at runtime. Both expose
   `toArray(): array` for `HostedFieldDto`/`PaymentDto`'s `createPayloadBody()` to call.
+  `BrowserDto::toArray()` (PRE-3713) is not a straight property dump: the Unified API caps
+  `browser.ip` at 15 characters (an IPv4's maximum length) and rejects an IPv6 address, so any
+  `ip` containing a `:` is serialized as `0.0.0.0` instead — even a short one like `::1`, so the
+  rule is "IPv6 never reaches the API" rather than a length check. The colon test is deliberately
+  broader than `filter_var(..., FILTER_FLAG_IPV6)`, which rejects a zone-suffixed address such as
+  `fe80::1%eth0` and would let it through untouched. Nothing else about the IP is validated, and
+  the public `$ip` property keeps the caller's original value — only the serialized payload
+  changes, so the fallback covers both `HostedFieldDto` and `PaymentDto` without any signature
+  change.
   `AddressDto` (`line`, `city`, `country`, `state`, `zipCode`, all optional constructor parameters
   defaulting to `null`) models the `address` sub-object nested identically under a payment's
   optional `billing`/`shipping` blocks, per the Unified API's aliasing doc
