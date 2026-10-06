@@ -79,8 +79,22 @@ final class Assert
      */
     public static function paymentMethodIdNotSet(?array $paymentMethod, string $hint, string $exceptionClass): void
     {
-        if ($paymentMethod !== null && \array_key_exists('id', $paymentMethod)) {
-            throw new $exceptionClass("paymentMethod must not set 'id' directly; use {$hint} instead.");
+        self::paymentMethodKeyNotSet($paymentMethod, 'id', $hint, $exceptionClass);
+    }
+
+    /**
+     * Same rule as paymentMethodIdNotSet(), for any paymentMethod key a DTO's createPayloadBody()
+     * fills in on the caller's behalf (PRE-3717: 'hfToken' for HostedFieldDto, 'storedId' for
+     * PaymentDto) — a caller-set value is rejected rather than silently overwritten.
+     *
+     * @param array<string, mixed>|null $paymentMethod
+     * @param class-string<PayplugException> $exceptionClass
+     * @throws PayplugException if $paymentMethod sets $key directly
+     */
+    public static function paymentMethodKeyNotSet(?array $paymentMethod, string $key, string $hint, string $exceptionClass): void
+    {
+        if ($paymentMethod !== null && \array_key_exists($key, $paymentMethod)) {
+            throw new $exceptionClass("paymentMethod must not set '{$key}' directly; use {$hint} instead.");
         }
     }
 }

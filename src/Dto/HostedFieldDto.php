@@ -23,7 +23,13 @@ use PayplugUnifiedCore\Traits\BuildsCommonPayloadBody;
  * set it alongside paymentMethod.saveFutureUsage=true to create an alias from this hosted-fields
  * payment for future reuse; omit it otherwise.
  *
- * createPayloadBody() builds the exact Unified API request body this DTO describes.
+ * createPayloadBody() builds the exact Unified API request body this DTO describes. The token is
+ * sent both as paymentMethod.hfToken — where the Unified API reads it since its contract change
+ * (confirmed intentional by the API team on 2026-10-06, PRE-3717: a request carrying it only at
+ * the top level is rejected with 400) — and, for now, still as the top-level hfToken the previous
+ * contract expected, so the same request is accepted by a platform still on either contract. The
+ * API accepts the duplicate (checked on staging). Drop the top-level copy once the API team
+ * confirms the previous contract is retired everywhere.
  *
  * @see \PayplugUnifiedCore\Validators\HostedFieldDtoValidator
  */
@@ -53,7 +59,9 @@ final class HostedFieldDto implements PaymentRequestPayload
     /**
      * @var array{details?: array{fullName?: string, selectedBrand?: string, validityDate?: string}, saveFutureUsage?: bool}|null
      *      supplementary card metadata, nested exactly as the Unified API expects it. Must not set
-     *      'id' directly — that key belongs to PaymentDto's alias-payment flow, not this one.
+     *      'id' or 'storedId' directly — those keys belong to PaymentDto's alias-payment flow, not
+     *      this one — nor 'hfToken': createPayloadBody() fills it in from $hfToken
+     *      (HostedFieldDtoValidator rejects all three).
      */
     public $paymentMethod;
 
@@ -81,11 +89,13 @@ final class HostedFieldDto implements PaymentRequestPayload
      */
     public function createPayloadBody(): array
     {
-        $paymentMethodSpecificFields = ['hfToken' => $this->hfToken];
-
-        if ($this->paymentMethod !== null && $this->paymentMethod !== []) {
-            $paymentMethodSpecificFields['paymentMethod'] = $this->paymentMethod;
-        }
+        $paymentMethodSpecificFields = [
+            // Previous-contract field, kept for the PRE-3717 transition: remove the top-level hfToken
+            // once the API team confirms that contract is retired everywhere — paymentMethod.hfToken
+            // below is the current one.
+            'hfToken' => $this->hfToken,
+            'paymentMethod' => ['hfToken' => $this->hfToken] + ($this->paymentMethod ?? []),
+        ];
 
         if ($this->recurringMode !== null) {
             $paymentMethodSpecificFields['recurringMode'] = $this->recurringMode;

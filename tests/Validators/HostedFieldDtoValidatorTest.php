@@ -210,4 +210,33 @@ final class HostedFieldDtoValidatorTest extends TestCase
 
         $this->expectNotToPerformAssertions();
     }
+
+    /**
+     * PRE-3717: HostedFieldDto::createPayloadBody() sends the token as paymentMethod.hfToken
+     * itself, so a caller-set one is rejected rather than silently overwritten.
+     */
+    public function testValidateThrowsWhenPaymentMethodSetsHfTokenDirectly(): void
+    {
+        $this->expectException(InvalidHostedFieldException::class);
+        $this->expectExceptionMessage("paymentMethod must not set 'hfToken' directly; use the hfToken constructor argument instead.");
+
+        HostedFieldDtoValidator::validate(HostedFieldDtoBuilder::valid()
+            ->withPaymentMethod(['hfToken' => 'hf_other'])
+            ->build());
+    }
+
+    /**
+     * Under the PRE-3717 contract, paymentMethod.storedId is the key the Unified API reads a
+     * saved alias from: a HostedFieldDto carrying one alongside its hfToken would be ambiguous
+     * (new card or stored alias?), the same alias-on-HostedFieldDto case the 'id' check prevents.
+     */
+    public function testValidateThrowsWhenPaymentMethodSetsStoredIdDirectly(): void
+    {
+        $this->expectException(InvalidHostedFieldException::class);
+        $this->expectExceptionMessage("paymentMethod must not set 'storedId' directly; use PaymentDto instead.");
+
+        HostedFieldDtoValidator::validate(HostedFieldDtoBuilder::valid()
+            ->withPaymentMethod(['storedId' => 'alias_x'])
+            ->build());
+    }
 }

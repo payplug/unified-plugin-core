@@ -53,6 +53,8 @@ final class HostedFieldDtoValidator
         Assert::notEmpty($dto->hfToken, 'hfToken', InvalidHostedFieldException::class);
 
         Assert::paymentMethodIdNotSet($dto->paymentMethod, 'PaymentDto', InvalidHostedFieldException::class);
+        Assert::paymentMethodKeyNotSet($dto->paymentMethod, 'hfToken', 'the hfToken constructor argument', InvalidHostedFieldException::class);
+        Assert::paymentMethodKeyNotSet($dto->paymentMethod, 'storedId', 'PaymentDto', InvalidHostedFieldException::class);
 
         self::assertFullNameSetWhenSavingFutureUsage($dto->paymentMethod);
     }

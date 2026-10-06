@@ -115,4 +115,18 @@ final class PaymentDtoValidatorTest extends TestCase
 
         $this->expectNotToPerformAssertions();
     }
+
+    /**
+     * PRE-3717: PaymentDto::createPayloadBody() sends the alias as paymentMethod.storedId itself,
+     * so a caller-set storedId is rejected exactly like a caller-set id.
+     */
+    public function testValidateThrowsWhenPaymentMethodSetsStoredIdDirectly(): void
+    {
+        $this->expectException(InvalidPaymentException::class);
+        $this->expectExceptionMessage("paymentMethod must not set 'storedId' directly; use the aliasId constructor argument instead.");
+
+        PaymentDtoValidator::validate(PaymentDtoBuilder::valid()
+            ->withPaymentMethod(['storedId' => 'other_alias'])
+            ->build());
+    }
 }
