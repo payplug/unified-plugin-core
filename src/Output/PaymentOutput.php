@@ -54,7 +54,7 @@ final class PaymentOutput
     /** @var string|null ISO-8601 date-time deadline by which an authorization must be captured */
     public $maxCaptureDate;
 
-    /** @var int|null in cents; null when the response carries no requestedAmount/amount pair */
+    /** @var int|null in minor units of the currency; null when the response carries no requestedAmount/amount pair */
     public $remainingCapturableAmount;
 
     public function __construct(
