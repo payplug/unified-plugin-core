@@ -242,12 +242,49 @@ final class AmountHelperTest extends TestCase
         ];
     }
 
-    public function testThreeDecimalCurrencyFallsBackToTwoDecimals(): void
+    /**
+     * @dataProvider threeDecimalCurrencyProvider
+     */
+    public function testToCentsRejectsThreeDecimalCurrency(string $currency): void
     {
-        // 3-decimal currencies (BHD, KWD, ...) are out of scope for PRE-3724: they are
-        // converted with the 2-decimal factor. This pins that known gap.
-        self::assertSame(1235, AmountHelper::toCents(12.346, 'KWD'));
-        self::assertSame(12.35, AmountHelper::fromCents(1235, 'KWD'));
+        $this->expectException(InvalidCurrencyException::class);
+        $this->expectExceptionMessage('not supported');
+
+        AmountHelper::toCents(12.346, $currency);
+    }
+
+    /**
+     * @dataProvider threeDecimalCurrencyProvider
+     */
+    public function testFromCentsRejectsThreeDecimalCurrency(string $currency): void
+    {
+        $this->expectException(InvalidCurrencyException::class);
+        $this->expectExceptionMessage('not supported');
+
+        AmountHelper::fromCents(12346, $currency);
+    }
+
+    public function testThreeDecimalCurrencyIsRejectedCaseInsensitivelyAfterTrimming(): void
+    {
+        $this->expectException(InvalidCurrencyException::class);
+
+        AmountHelper::toCents(1.0, ' kwd ');
+    }
+
+    /**
+     * @return array<string, array<int, string>>
+     */
+    public function threeDecimalCurrencyProvider(): array
+    {
+        return [
+            'BHD' => ['BHD'],
+            'IQD' => ['IQD'],
+            'JOD' => ['JOD'],
+            'KWD' => ['KWD'],
+            'LYD' => ['LYD'],
+            'OMR' => ['OMR'],
+            'TND' => ['TND'],
+        ];
     }
 
     /**

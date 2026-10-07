@@ -516,9 +516,11 @@ running Docker daemon. The image builds automatically the first time any target 
   `978` included) throws `InvalidCurrencyException` (`"currency must be a 3-letter ISO 4217 code,
   got '<value>'."`); a well-formed code not in the list (`EUR`, `USD`, `XXX`, ...) uses the
   2-decimal factor without throwing — UPC holds no full ISO list, the API is the authority on
-  accepted currencies. 3-decimal currencies (`BHD`, `KWD`, `OMR`, ...) are out of scope and fall back
-  to the 2-decimal factor; a test pins that known gap (`testThreeDecimalCurrencyFallsBackToTwoDecimals`),
-  so supporting them is a deliberate follow-up rather than an accidental behavior change.
+  accepted currencies. 3-decimal currencies (`BHD`, `IQD`, `JOD`, `KWD`, `LYD`, `OMR`, `TND`, in a private
+  `THREE_DECIMAL_CURRENCIES` constant) are not supported and throw `InvalidCurrencyException`
+  (`"currency '<CODE>' is a 3-decimal currency and is not supported."`) from both methods, rather than
+  silently converting with the 2-decimal factor, which would be off by a factor of 10. Supporting them
+  later means moving a code out of that constant and giving it a factor of 1000.
   `$currency` sits before `$mode` so the optional `$mode` stays last: `toCents(19.99, 'EUR')`,
   `toCents($total, $isoCode, (int) $psRoundMode)`. The method names keep "Cents" for continuity;
   their docblocks speak of minor units.
@@ -527,9 +529,11 @@ running Docker daemon. The image builds automatically the first time any target 
   public signatures: `toCents()`'s second parameter is now `string $currency` instead of
   `int $mode`, and `fromCents()` gains a required second parameter. This is deliberate, and it ships
   in **1.2.0**, not a new major: every consuming plugin must add the order/payment currency to every
-  `toCents()`/`fromCents()` call (amount read paths such as webhooks included) **before** bumping
-  its UPC constraint to `^1.2`, in the same change that raises the constraint — a plugin still
-  pinned to `^1.1` would otherwise pick it up on a routine `composer update` and break. An
+  `toCents()`/`fromCents()` call (amount read paths such as webhooks included) in the same change
+  that moves it to the new signature. Note that `^1.1` already resolves to 1.2.0, so **every**
+  plugin on `^1.x` is exposed to this on its next `composer update`: adopt the new signature, or cap
+  the constraint (`~1.1.3`), before any update. In practice UPC is bundled into each plugin's ZIP
+  and only updated alongside a plugin change, not through an automatic update. An
   unmigrated call fails loudly rather than silently mis-converting: under `strict_types`, an int
   `$mode` in the second slot is a `TypeError`; without it, the int is coerced to a numeric string
   that fails the format check and throws `InvalidCurrencyException`. A plugin that already

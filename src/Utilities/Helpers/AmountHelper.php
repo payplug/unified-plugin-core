@@ -14,8 +14,9 @@ use PayplugUnifiedCore\Exceptions\InvalidCurrencyException;
  *
  * The currency is an ISO 4217 alpha-3 code, compared case-insensitively after trimming. An empty
  * or malformed code (anything other than exactly 3 ASCII letters) throws InvalidCurrencyException.
- * A well-formed code that is not in ZERO_DECIMAL_CURRENCIES is treated as 2-decimal, including
- * 3-decimal currencies (BHD, KWD, ...), which are not supported.
+ * A 3-decimal currency (BHD, IQD, JOD, KWD, LYD, OMR, TND) is not supported and throws
+ * InvalidCurrencyException rather than being converted with a wrong factor. Any other well-formed
+ * code that is not in ZERO_DECIMAL_CURRENCIES is treated as 2-decimal.
  */
 final class AmountHelper
 {
@@ -42,6 +43,13 @@ final class AmountHelper
         'XOF',
         'XPF',
     ];
+
+    /**
+     * Currencies with an ISO 4217 minor-unit exponent of 3. Rejected rather than converted: the
+     * 2-decimal factor would be off by a factor of 10. Supporting them later is a matter of
+     * moving a code out of this list and giving it a factor of 1000.
+     */
+    private const THREE_DECIMAL_CURRENCIES = ['BHD', 'IQD', 'JOD', 'KWD', 'LYD', 'OMR', 'TND'];
 
     /**
      * @codeCoverageIgnore
@@ -72,7 +80,7 @@ final class AmountHelper
      * @param string $currency ISO 4217 alpha-3 code of the amount's currency
      * @param 1|2|3|4 $mode one of the PHP_ROUND_HALF_* constants
      * @return int
-     * @throws InvalidCurrencyException if $currency is empty or not a 3-letter code
+     * @throws InvalidCurrencyException if $currency is empty, not a 3-letter code, or a 3-decimal currency
      */
     public static function toCents(float $amount, string $currency, int $mode = PHP_ROUND_HALF_UP): int
     {
@@ -90,7 +98,7 @@ final class AmountHelper
      * </code>
      *
      * @param string $currency ISO 4217 alpha-3 code of the amount's currency
-     * @throws InvalidCurrencyException if $currency is empty or not a 3-letter code
+     * @throws InvalidCurrencyException if $currency is empty, not a 3-letter code, or a 3-decimal currency
      */
     public static function fromCents(int $cents, string $currency): float
     {
@@ -108,6 +116,10 @@ final class AmountHelper
 
         if (preg_match('/\A[A-Z]{3}\z/', $code) !== 1) {
             throw new InvalidCurrencyException(\sprintf("currency must be a 3-letter ISO 4217 code, got '%s'.", $currency));
+        }
+
+        if (\in_array($code, self::THREE_DECIMAL_CURRENCIES, true)) {
+            throw new InvalidCurrencyException(\sprintf("currency '%s' is a 3-decimal currency and is not supported.", $code));
         }
 
         return \in_array($code, self::ZERO_DECIMAL_CURRENCIES, true) ? 1 : 100;

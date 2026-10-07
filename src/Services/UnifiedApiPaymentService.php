@@ -392,8 +392,9 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
      * second (or later) call succeeds against the same authorization depends on the account/
      * processor supporting multiple captures — this method itself places no limit on how many
      * times it can be called. $orderId/$description/$amount follow createRefund()'s shape, $amount
-     * being in minor units of the payment's currency. $currency is required by the API whenever $amount is given (a partial capture) and is sent
-     * only when non-null and non-empty, same as createRefund().
+     * being in minor units of the payment's currency. $currency is required by the API whenever
+     * $amount is given (a partial capture) and is sent only when non-null and non-empty, same as
+     * createRefund().
      *
      * @throws InvalidCaptureRequestException if $orderId or $description is empty, or if $amount
      *                      is given and $currency is empty — the API requires currency alongside a
