@@ -108,4 +108,20 @@ final class AssertTest extends TestCase
 
         Assert::paymentMethodIdNotSet(['id' => null], 'PaymentDto', InvalidPaymentException::class);
     }
+
+    public function testPaymentMethodKeyNotSetPassesWhenTheKeyIsAbsent(): void
+    {
+        Assert::paymentMethodKeyNotSet(['details' => ['selectedBrand' => 'VISA']], 'storedId', 'PaymentDto', InvalidPaymentException::class);
+        Assert::paymentMethodKeyNotSet(null, 'storedId', 'PaymentDto', InvalidPaymentException::class);
+
+        $this->expectNotToPerformAssertions();
+    }
+
+    public function testPaymentMethodKeyNotSetThrowsWhenTheKeyIsSet(): void
+    {
+        $this->expectException(InvalidPaymentException::class);
+        $this->expectExceptionMessage("paymentMethod must not set 'storedId' directly; use the aliasId constructor argument instead.");
+
+        Assert::paymentMethodKeyNotSet(['storedId' => 'alias_789'], 'storedId', 'the aliasId constructor argument', InvalidPaymentException::class);
+    }
 }

@@ -43,6 +43,7 @@ final class PaymentDtoValidator
         Assert::notEmpty($dto->recurringMode, 'recurringMode', InvalidPaymentException::class);
 
         Assert::paymentMethodIdNotSet($dto->paymentMethod, 'the aliasId constructor argument', InvalidPaymentException::class);
+        Assert::paymentMethodKeyNotSet($dto->paymentMethod, 'storedId', 'the aliasId constructor argument', InvalidPaymentException::class);
 
         self::assertSaveFutureUsageNotSet($dto->paymentMethod);
     }

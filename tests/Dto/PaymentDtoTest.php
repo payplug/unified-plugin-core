@@ -55,7 +55,7 @@ final class PaymentDtoTest extends TestCase
             'orderId' => 'order_456',
             'description' => null,
             'capture' => true,
-            'paymentMethod' => ['id' => 'alias_789'],
+            'paymentMethod' => ['id' => 'alias_789', 'storedId' => 'alias_789'],
             'recurringMode' => 'ONE_CLICK',
         ], $dto->createPayloadBody());
     }
@@ -111,9 +111,38 @@ final class PaymentDtoTest extends TestCase
         );
 
         self::assertSame(
-            ['details' => ['selectedBrand' => 'VISA'], 'id' => 'alias_789'],
+            ['details' => ['selectedBrand' => 'VISA'], 'id' => 'alias_789', 'storedId' => 'alias_789'],
             $dto->createPayloadBody()['paymentMethod']
         );
+    }
+
+    /**
+     * The Unified API now reads the alias from paymentMethod.storedId (contract change confirmed
+     * 2026-10-06, PRE-3717). paymentMethod.id is still sent alongside it so a platform still on the
+     * previous contract keeps accepting the request.
+     */
+    public function testCreatePayloadBodySendsTheAliasBothAsPaymentMethodIdAndStoredId(): void
+    {
+        $dto = new PaymentDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456'), 'alias_789', 'ONE_CLICK');
+
+        $paymentMethod = $dto->createPayloadBody()['paymentMethod'];
+
+        self::assertSame('alias_789', $paymentMethod['id']);
+        self::assertSame('alias_789', $paymentMethod['storedId']);
+    }
+
+    public function testCreatePayloadBodyOverridesACallerSuppliedStoredId(): void
+    {
+        $dto = new PaymentDto(
+            new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456'),
+            'alias_789',
+            'ONE_CLICK',
+            null,
+            null,
+            ['storedId' => 'alias_stale']
+        );
+
+        self::assertSame('alias_789', $dto->createPayloadBody()['paymentMethod']['storedId']);
     }
 
     public function testCreatePayloadBodyIncludesOptionalFieldsWhenProvided(): void
@@ -144,7 +173,7 @@ final class PaymentDtoTest extends TestCase
             'orderId' => 'order_456',
             'description' => 'Order #456',
             'capture' => true,
-            'paymentMethod' => ['id' => 'alias_789'],
+            'paymentMethod' => ['id' => 'alias_789', 'storedId' => 'alias_789'],
             'recurringMode' => 'ONE_CLICK',
             'browser' => ['ip' => '10.1.1.1', 'referrer' => 'https://shop.example.com/cart', 'userAgent' => 'Mozilla/5.0'],
             'customer' => ['id' => 'john.snow', 'email' => 'john.snow@example.com'],

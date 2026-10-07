@@ -63,6 +63,7 @@ final class HostedFieldDtoTest extends TestCase
             'description' => null,
             'capture' => true,
             'hfToken' => 'hf_abc',
+            'paymentMethod' => ['hfToken' => 'hf_abc'],
         ], $dto->createPayloadBody());
     }
 
@@ -142,7 +143,7 @@ final class HostedFieldDtoTest extends TestCase
             'description' => 'Order #456',
             'capture' => true,
             'hfToken' => 'hf_abc',
-            'paymentMethod' => ['details' => ['fullName' => 'John Snow', 'selectedBrand' => 'visa']],
+            'paymentMethod' => ['hfToken' => 'hf_abc', 'details' => ['fullName' => 'John Snow', 'selectedBrand' => 'visa']],
             'recurringMode' => 'ONE_CLICK',
             'browser' => ['ip' => '10.1.1.1', 'referrer' => 'https://shop.example.com/cart', 'userAgent' => 'Mozilla/5.0'],
             'customer' => ['id' => 'john.snow', 'email' => 'john.snow@example.com'],
@@ -178,6 +179,7 @@ final class HostedFieldDtoTest extends TestCase
             'description' => null,
             'capture' => true,
             'hfToken' => 'hf_abc',
+            'paymentMethod' => ['hfToken' => 'hf_abc'],
         ], $body);
     }
 
@@ -247,11 +249,43 @@ final class HostedFieldDtoTest extends TestCase
         self::assertSame(['cancelUrl' => 'https://shop.example.com/pay/cancel'], $dto->createPayloadBody()['redirect']);
     }
 
-    public function testCreatePayloadBodyOmitsPaymentMethodWhenItIsAnEmptyArray(): void
+    public function testCreatePayloadBodySendsOnlyTheTokenInPaymentMethodWhenItIsAnEmptyArray(): void
     {
         $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789'), 'hf_abc', null, null, null, []);
 
-        self::assertArrayNotHasKey('paymentMethod', $dto->createPayloadBody());
+        self::assertSame(['hfToken' => 'hf_abc'], $dto->createPayloadBody()['paymentMethod']);
+    }
+
+    /**
+     * The Unified API now reads the token from paymentMethod.hfToken (contract change confirmed
+     * 2026-10-06, PRE-3717). The top-level hfToken is still sent alongside it so a platform still
+     * on the previous contract keeps accepting the request.
+     */
+    public function testCreatePayloadBodySendsTheTokenBothAtTheTopLevelAndInsidePaymentMethod(): void
+    {
+        $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456'), 'hf_abc');
+
+        $body = $dto->createPayloadBody();
+
+        self::assertSame('hf_abc', $body['hfToken']);
+        self::assertSame('hf_abc', $body['paymentMethod']['hfToken']);
+    }
+
+    public function testCreatePayloadBodyOverridesACallerSuppliedPaymentMethodToken(): void
+    {
+        $dto = new HostedFieldDto(
+            new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456'),
+            'hf_abc',
+            null,
+            null,
+            null,
+            ['hfToken' => 'hf_stale', 'details' => ['fullName' => 'John Snow']]
+        );
+
+        self::assertSame(
+            ['hfToken' => 'hf_abc', 'details' => ['fullName' => 'John Snow']],
+            $dto->createPayloadBody()['paymentMethod']
+        );
     }
 
     public function testCreatePayloadBodyOmitsAllOptionalFieldsWhenNotProvided(): void
@@ -260,7 +294,7 @@ final class HostedFieldDtoTest extends TestCase
 
         $body = $dto->createPayloadBody();
 
-        self::assertArrayNotHasKey('paymentMethod', $body);
+        self::assertSame(['hfToken' => 'hf_abc'], $body['paymentMethod']);
         self::assertArrayNotHasKey('recurringMode', $body);
         self::assertArrayNotHasKey('browser', $body);
         self::assertArrayNotHasKey('customer', $body);
@@ -287,11 +321,11 @@ final class HostedFieldDtoTest extends TestCase
      * array equality — that's what catches a PHP array being structurally right but serializing to
      * the wrong JSON shape.
      */
-    public function testCreatePayloadBodyJsonEncodedOutputOmitsPaymentMethodEntirelyWhenNotProvided(): void
+    public function testCreatePayloadBodyJsonEncodedOutputCarriesOnlyTheTokenInPaymentMethodWhenNotProvided(): void
     {
         $dto = new HostedFieldDto(new CommonFieldsDto('acc_123', 1000, 'EUR', 'order_456', 'submerchant_789'), 'hf_abc');
 
-        self::assertStringNotContainsString('paymentMethod', (string) json_encode($dto->createPayloadBody()));
+        self::assertStringContainsString('"paymentMethod":{"hfToken":"hf_abc"}', (string) json_encode($dto->createPayloadBody()));
     }
 
     public function testCreatePayloadBodyJsonEncodedOutputSerializesPaymentMethodAsAnObject(): void
@@ -305,6 +339,6 @@ final class HostedFieldDtoTest extends TestCase
             ['details' => ['fullName' => 'John Snow']]
         );
 
-        self::assertStringContainsString('"paymentMethod":{"details":{"fullName":"John Snow"}}', (string) json_encode($dto->createPayloadBody()));
+        self::assertStringContainsString('"paymentMethod":{"hfToken":"hf_abc","details":{"fullName":"John Snow"}}', (string) json_encode($dto->createPayloadBody()));
     }
 }
