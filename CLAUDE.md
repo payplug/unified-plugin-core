@@ -8,7 +8,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 e-commerce plugins (e.g. PrestaShop). Beyond the scaffolding — composer manifest, PSR-4 directory
 skeleton, static analysis, code style, git hooks, test harness, CI, and a Dockerized dev
 environment — the library now provides: a domain exception hierarchy under `src/Exceptions/`;
-six utility classes under `src/Utilities/Helpers/` (`AmountHelper`, dependency-free; `PhoneHelper`,
+six utility classes under `src/Utilities/Helpers/` (`AmountHelper`, dependency-free, converts a
+major-unit amount to and from minor units of its currency, zero-decimal currencies included;
+`PhoneHelper`,
 backed by `giggsey/libphonenumber-for-php`, the library's first real runtime dependency — see
 "Constraints to preserve" for what that changed; `PkceHelper`, dependency-free; `ExecCodeMapper`,
 dependency-free, maps a Payplug execCode to a `PaymentOutcome`; `WebhookNotificationHelper`,
@@ -107,7 +109,7 @@ running Docker daemon. The image builds automatically the first time any target 
   one-off class. `Models/` no longer exists as a category — every class that lived there moved to
   `DataValues/` or `Output/` (see those bullets below for which, and why).
 - `Exceptions/` holds the domain exception hierarchy: `PayplugException` (base, extends
-  `\Exception` directly) and twenty-six subtypes — `RefundAmountException`, `PaymentNotFoundException`,
+  `\Exception` directly) and twenty-seven subtypes — `RefundAmountException`, `PaymentNotFoundException`,
   `InvalidPhoneNumberException`, `CardOperationException`, `ApiException`,
   `InvalidOperationDataException`, `InvalidTokenException`, `InvalidNotificationException`,
   `InvalidHostedFieldException`, `InvalidCommonFieldsException`, `InvalidPaymentException`
@@ -141,10 +143,13 @@ running Docker daemon. The image builds automatically the first time any target 
   `orderId`/`description` — the account/processor does not support capturing that authorization
   more than once; kept distinct from `OperationConflictException` since it reflects that
   capability limit rather than a literal replay of an identical request). An issuer refusal reuses
-  the pre-existing `CardOperationException` — its first real usage — rather than adding a 27th
-  type, since that exception already existed in the hierarchy for exactly this purpose and
+  the pre-existing `CardOperationException` — its first real usage — rather than adding a
+  dedicated type, since that exception already existed in the hierarchy for exactly this purpose and
   nothing about
-  it is capture/cancellation-specific. Each subtype in this hierarchy remains
+  it is capture/cancellation-specific. `InvalidCurrencyException` (PRE-3724) is thrown by
+  `AmountHelper::toCents()`/`fromCents()` for an empty or malformed currency code (see
+  `Utilities/Helpers/` below) — the closest precedent is `InvalidPhoneNumberException`, a helper
+  rejecting a malformed input. Each subtype in this hierarchy remains
   a plain marker class extending `PayplugException` directly, with no custom constructor or
   properties, so CMS plugins can catch specific error types instead of a generic exception. Any
   future addition to this hierarchy should follow the same pattern: one class per file, no PHP
@@ -177,8 +182,8 @@ running Docker daemon. The image builds automatically the first time any target 
   `InvalidOperationDataException` (6th subtype in the `Exceptions/` hierarchy above). `execCode`
   is typed `string`, not `int`: Payplug's execution-codes documentation describes it as a numeric
   string (e.g. `"4001"`, `"6003"`) from an open-ended, growing catalog, so only non-emptiness is
-  validated, not a specific digit pattern. `amount` is `int` centimes, matching
-  `AmountHelper::toCents()`'s output convention. **Placement note** (an explicit overlap call, not
+  validated, not a specific digit pattern. `amount` is an `int` in minor units of the payment's
+  currency, matching `AmountHelper::toCents()`'s output convention. **Placement note** (an explicit overlap call, not
   an oversight): `WebhookNotificationHelper::parse()` produces an `OperationData` from a parsed
   webhook payload, which reads as `Output/`-shaped — but that's not its whole story. It's also
   exactly what `IPaymentRepository::save()`/`getByOrderId()`/`getByOperationId()` persist and
@@ -471,8 +476,10 @@ running Docker daemon. The image builds automatically the first time any target 
   plain descriptive name on purpose so it doesn't read as a ninth UPC↔CMS contract.
 - `Utilities/Helpers/` holds small static utility classes — no CMS calls, no network calls; most
   are also dependency-free, but that's not a hard rule (see `PhoneHelper` below). The first one,
-  `AmountHelper`, centralizes float↔centimes amount conversion
-  (`toCents(float $amount, int $mode = PHP_ROUND_HALF_UP): int`, `fromCents(int $cents): float`)
+  `AmountHelper`, centralizes conversion between a major-unit float amount and the integer number
+  of minor units of its currency
+  (`toCents(float $amount, string $currency, int $mode = PHP_ROUND_HALF_UP): int`,
+  `fromCents(int $cents, string $currency): float`)
   that was previously duplicated with divergent rounding behavior across the sibling CMS plugins
   (notably `ps_round` on the PrestaShop side). Pattern for this category: `final class` with a
   private, `@codeCoverageIgnore`d constructor (blocks instantiation without inflating the coverage
@@ -483,13 +490,58 @@ running Docker daemon. The image builds automatically the first time any target 
   because PrestaShop is the only sibling CMS that lets merchants configure their own rounding
   algorithm (`PS_ROUND_MODE`, consumed by `Tools::ps_round()`); WooCommerce/Magento 2/Sylius all
   hardcode PHP's default rounding and will simply never pass `$mode`. The mode only changes the
-  outcome for genuinely ambiguous inputs landing exactly on a half-cent boundary (e.g. `19.995`) —
-  an already-decided 2-decimal amount rounds identically under every mode — so callers should pass
+  outcome for genuinely ambiguous inputs landing exactly on a half-minor-unit boundary (e.g.
+  `19.995` EUR, `1000.5` JPY) — an amount already decided to the currency's own number of decimals
+  rounds identically under every mode — so callers should pass
   their own resolved rounding preference in rather than pre-rounding themselves. Because
   PHPStan's core stubs constrain `round()`'s `$mode` parameter to the literal type `1|2|3|4` (the
   `PHP_ROUND_HALF_*` constants), `toCents()`'s own `$mode` parameter needs a matching
   `@param 1|2|3|4 $mode` docblock annotation — a plain `@param int $mode` fails `make stan`; watch
   for an IDE/formatter silently "simplifying" it back.
+
+  **Currency handling (PRE-3724).** `$currency` is a required ISO 4217 alpha-3 code, compared
+  case-insensitively after `strtoupper(trim())`. The conversion factor is 1 for a zero-decimal
+  currency — the amount is sent to the Unified API as is (`toCents(1000.0, 'JPY') === 1000`,
+  `fromCents(1000, 'JPY') === 1000.0`) — and 100 otherwise. The zero-decimal list lives in one
+  `private const ZERO_DECIMAL_CURRENCIES` on `AmountHelper`: the ISO 4217 exponent-0 codes
+  `BIF`, `CLP`, `DJF`, `GNF`, `ISK`, `JPY`, `KMF`, `KRW`, `PYG`, `RWF`, `UGX`, `VND`, `VUV`, `XAF`,
+  `XOF`, `XPF` (`UYI` left out: an index unit, not a payment currency). Hard-coded rather than read
+  from `ext-intl`, so the helper stays dependency-free. **Still to be confirmed with the Unified API
+  team**: which of these currencies the API accepts and whether it expects each amount as is —
+  notably `ISK`/`UGX`, which some PSPs treat as 2-decimal despite ISO, and the inverse case
+  `HUF`/`TWD`; adjust the constant to their answer. Private on purpose, so the list can change
+  without a BC concern. Validation, applied by both methods before any arithmetic: an empty code
+  after trimming throws `InvalidCurrencyException` (`"currency must not be empty."`, via
+  `Assert::notEmpty()`); anything other than exactly 3 ASCII letters (ISO numeric codes such as
+  `978` included) throws `InvalidCurrencyException` (`"currency must be a 3-letter ISO 4217 code,
+  got '<value>'."`); a well-formed code not in the list (`EUR`, `USD`, `XXX`, ...) uses the
+  2-decimal factor without throwing — UPC holds no full ISO list, the API is the authority on
+  accepted currencies. 3-decimal currencies (`BHD`, `KWD`, `OMR`, ...) are out of scope and fall back
+  to the 2-decimal factor; a test pins that known gap (`testThreeDecimalCurrencyFallsBackToTwoDecimals`),
+  so supporting them is a deliberate follow-up rather than an accidental behavior change.
+  `$currency` sits before `$mode` so the optional `$mode` stays last: `toCents(19.99, 'EUR')`,
+  `toCents($total, $isoCode, (int) $psRoundMode)`. The method names keep "Cents" for continuity;
+  their docblocks speak of minor units.
+
+  **Breaking change shipped in a minor release (1.2.0).** Making `$currency` required changes both
+  public signatures: `toCents()`'s second parameter is now `string $currency` instead of
+  `int $mode`, and `fromCents()` gains a required second parameter. This is deliberate, and it ships
+  in **1.2.0**, not a new major: every consuming plugin must add the order/payment currency to every
+  `toCents()`/`fromCents()` call (amount read paths such as webhooks included) **before** bumping
+  its UPC constraint to `^1.2`, in the same change that raises the constraint — a plugin still
+  pinned to `^1.1` would otherwise pick it up on a routine `composer update` and break. An
+  unmigrated call fails loudly rather than silently mis-converting: under `strict_types`, an int
+  `$mode` in the second slot is a `TypeError`; without it, the int is coerced to a numeric string
+  that fails the format check and throws `InvalidCurrencyException`. A plugin that already
+  special-cases zero-decimal currencies itself must drop that logic, or the amount is converted
+  twice.
+
+  **Amount-unit convention.** Every `int` amount in UPC — `CommonFieldsDto::$amount`,
+  `OperationData::$amount`, the `$amount` parameter of `createRefund()`/`capturePayment()`/
+  `cancelPayment()`, and the amounts on `PaymentOutput`/`CaptureOutput`/`CancellationOutput` — is
+  in minor units of the payment's currency (cents for EUR, yen for JPY). UPC never rescales an
+  amount at the API boundary: the CMS converts through `AmountHelper` with the order's currency,
+  and the Unified API receives that integer unchanged.
 - `PhoneHelper` (same `final class` + private-constructor pattern as `AmountHelper`) centralizes
   phone number normalization — `toE164(string $phone, string $countryCode): string` and
   `isMobile(string $phone, string $countryCode): bool` — previously duplicated between plugins (PS
@@ -792,7 +844,8 @@ running Docker daemon. The image builds automatically the first time any target 
   `HostedFieldDto::createPayloadBody()` already sends at payment-creation time) does. This is
   recorded as a confirmed, reproduced-on-staging finding, not a guess: the capitalized key from the
   API's own error text is misleading, and a future maintainer should not "fix" the casing here to
-  match that error message. `$amount` is optional and in cents: omitted, the Unified API refunds
+  match that error message. `$amount` is optional and in minor units of the payment's currency:
+  omitted, the Unified API refunds
   100% of the payment/capture amount (a full refund); given, it's a partial refund of that amount.
   The Unified API itself rejects an amount exceeding what was captured (HTTP 400), so that business
   rule isn't duplicated client-side — only a `$amount` that's zero or negative is rejected up

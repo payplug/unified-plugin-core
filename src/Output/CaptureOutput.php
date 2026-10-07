@@ -32,16 +32,16 @@ final class CaptureOutput
     /** @var string */
     public $body;
 
-    /** @var int|null in cents; null when the response carries no "amount" field */
+    /** @var int|null in minor units of the currency; null when the response carries no "amount" field */
     public $capturedAmount;
 
-    /** @var int|null in cents; null when the response carries no "requestedAmount" field */
+    /** @var int|null in minor units of the currency; null when the response carries no "requestedAmount" field */
     public $requestedAmount;
 
     /** @var string|null ISO-8601 date-time; null when the response carries no "maxCaptureDate" field */
     public $maxCaptureDate;
 
-    /** @var int|null in cents; null unless both capturedAmount and requestedAmount are present */
+    /** @var int|null in minor units of the currency; null unless both capturedAmount and requestedAmount are present */
     public $remainingCapturableAmount;
 
     public function __construct(
