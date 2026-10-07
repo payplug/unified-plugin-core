@@ -290,7 +290,8 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
      * documentation, the refund is keyed by the payment's own id — the same value this library's
      * OperationData/webhook vocabulary already calls "operationId" (see WebhookNotificationHelper),
      * so that's the parameter name used here rather than introducing a second name for the same
-     * value. Omitting $amount refunds the payment's full remaining amount; the Unified API itself
+     * value. $amount is in minor units of the payment's currency (see AmountHelper::toCents()).
+     * Omitting $amount refunds the payment's full remaining amount; the Unified API itself
      * rejects an amount exceeding what was captured, so that check isn't duplicated here.
      * $orderId and $description are both required — confirmed against the real staging API
      * (2026-08-27) by probing each field's absence individually, not merely the GitBook doc: a body
@@ -390,9 +391,10 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
      * Captures a payment or authorization, in full or, when $amount is given, in part. Whether a
      * second (or later) call succeeds against the same authorization depends on the account/
      * processor supporting multiple captures — this method itself places no limit on how many
-     * times it can be called. $orderId/$description/$amount follow createRefund()'s shape.
-     * $currency is required by the API whenever $amount is given (a partial capture) and is sent
-     * only when non-null and non-empty, same as createRefund().
+     * times it can be called. $orderId/$description/$amount follow createRefund()'s shape, $amount
+     * being in minor units of the payment's currency. $currency is required by the API whenever
+     * $amount is given (a partial capture) and is sent only when non-null and non-empty, same as
+     * createRefund().
      *
      * @throws InvalidCaptureRequestException if $orderId or $description is empty, or if $amount
      *                      is given and $currency is empty — the API requires currency alongside a
@@ -466,7 +468,8 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
 
     /**
      * Cancels (voids) a payment or authorization, in full by default or, when $amount is given, in
-     * part. $orderId/$description/$amount follow createRefund()'s shape. Omitting $amount only
+     * part. $orderId/$description/$amount follow createRefund()'s shape, $amount being in minor
+     * units of the payment's currency. Omitting $amount only
      * releases the full authorization when nothing has been captured against it yet; once any
      * capture has occurred, the API requires $amount to be the exact remaining
      * authorized-but-uncaptured balance and rejects an omitted or mismatched one. $currency is

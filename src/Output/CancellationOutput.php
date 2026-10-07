@@ -25,13 +25,13 @@ final class CancellationOutput
     /** @var string */
     public $body;
 
-    /** @var int|null in cents; null when the response carries no "amount" field */
+    /** @var int|null in minor units of the currency; null when the response carries no "amount" field */
     public $cancelledAmount;
 
-    /** @var int|null in cents; null when the response carries no "requestedAmount" field */
+    /** @var int|null in minor units of the currency; null when the response carries no "requestedAmount" field */
     public $requestedAmount;
 
-    /** @var int|null in cents; null unless both cancelledAmount and requestedAmount are present */
+    /** @var int|null in minor units of the currency; null unless both cancelledAmount and requestedAmount are present */
     public $remainingCancellableAmount;
 
     public function __construct(int $status, string $body, ?int $cancelledAmount, ?int $requestedAmount)

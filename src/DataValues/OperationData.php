@@ -30,7 +30,7 @@ final class OperationData
     /** @var string */
     public $outcome;
 
-    /** @var int */
+    /** @var int in minor units of the payment's currency */
     public $amount;
 
     /** @var string */

@@ -16,7 +16,7 @@ final class CommonFieldsDto
     /** @var string */
     public $accountId;
 
-    /** @var int */
+    /** @var int in minor units of $currency (see AmountHelper::toCents()) */
     public $amount;
 
     /** @var string */

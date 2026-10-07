@@ -6,6 +6,7 @@ $autoloadPath = isset($argv[1]) ? $argv[1] : __DIR__ . '/../vendor/autoload.php'
 
 require $autoloadPath;
 
+use PayplugUnifiedCore\Exceptions\InvalidCurrencyException;
 use PayplugUnifiedCore\Exceptions\InvalidPhoneNumberException;
 use PayplugUnifiedCore\Utilities\Helpers\AmountHelper;
 use PayplugUnifiedCore\Utilities\Helpers\PhoneHelper;
@@ -24,7 +25,21 @@ function check($label, $assertion, array &$failures)
 }
 
 check('AmountHelper::toCents', function () {
-    return AmountHelper::toCents(19.99) === 1999;
+    return AmountHelper::toCents(19.99, 'EUR') === 1999;
+}, $failures);
+
+check('AmountHelper::toCents zero-decimal currency', function () {
+    return AmountHelper::toCents(1000.0, 'JPY') === 1000;
+}, $failures);
+
+check('AmountHelper throws on empty currency', function () {
+    try {
+        AmountHelper::toCents(19.99, '');
+
+        return false;
+    } catch (InvalidCurrencyException $e) {
+        return true;
+    }
 }, $failures);
 
 check('PhoneHelper::toE164', function () {
