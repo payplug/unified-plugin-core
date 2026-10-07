@@ -221,9 +221,12 @@ running Docker daemon. The image builds automatically the first time any target 
   `redirect.postParams` (only when the request set `card.threeDSecure.displayMode=raw` — this
   library only extracts the bare `redirect.url` into `redirectUrl`; `postParams` isn't extracted,
   since nothing requests raw mode yet). `aliasId` (PRE-3590) is a third, independent derived field,
-  computed from the response body's `paymentMethod.id` (nullable): the alias identifier the
+  computed from the response body's `paymentMethod.storedId`, falling back to `paymentMethod.id`
+  (PRE-3717, see `createPayment()` in `Services/` below) (nullable): the alias identifier the
   operation just created (`hfToken` + `paymentMethod.saveFutureUsage`) or reused (`aliasId`-based
-  payment), `null` when the operation didn't involve an alias at all. None of the three fields maps
+  payment), `null` when the operation didn't involve an alias at all — and, under the current
+  contract, also for an `aliasId`-based payment, whose response no longer echoes the alias back
+  (observed on staging 2026-10-06), so a caller must rely on the alias it sent rather than on this. None of the three fields maps
   to a `PaymentOutcome` constant — that mapping, for the asynchronous webhook/3DS-return
   confirmation that comes later, is PRE-3588's job, not this ticket's. `maxCaptureDate` and
   `remainingCapturableAmount` (added for the authorization/capture/cancellation lifecycle ticket)
@@ -380,9 +383,21 @@ running Docker daemon. The image builds automatically the first time any target 
   a shape that isn't known yet, so it isn't guessed at; it must not set `id` directly
   (`HostedFieldDtoValidator`, see `Validators/` below, rejects that — `id` is `PaymentDto`'s
   concern). `createPayloadBody(): array` delegates the shared skeleton to
-  `BuildsCommonPayloadBody::buildPayloadBody()`, passing only its own `hfToken` (always present) and
-  `paymentMethod`/`recurringMode` (each only when non-null) as the payment-method-specific fields.
-  Matching tests in `tests/Dto/`.
+  `BuildsCommonPayloadBody::buildPayloadBody()`, passing its own `hfToken` (always present),
+  `paymentMethod` (always present, see below) and `recurringMode` (only when non-null) as the
+  payment-method-specific fields. As of PRE-3717 the token is sent **twice**: as
+  `paymentMethod.hfToken` (first key of `paymentMethod`, merged ahead of the caller's own
+  `paymentMethod` array; a caller-set `paymentMethod['hfToken']` is rejected by
+  `HostedFieldDtoValidator`, see `Validators/` below) and as the top-level
+  `hfToken`. The Unified API changed its contract (observed on staging 2026-10-05, confirmed
+  intentional by the API team 2026-10-06, never announced to the plugin teams): it now reads the
+  token from `paymentMethod.hfToken` and answers `400 INVALID_REQUEST` ("The parameter
+  \"paymentMethod.card.code or ... paymentMethod.hfToken or COMPANY_ID or paymentMethod.storedId
+  ...\" is missing.") to a request carrying it only at the top level. The top-level copy is kept for
+  platforms still on the previous contract — staging accepts both together — and should be dropped
+  once the API team confirms the previous contract is retired everywhere. Consequence:
+  `paymentMethod` is never omitted from the body anymore, even when the caller passes `null`/`[]`
+  (it then carries only `hfToken`). Matching tests in `tests/Dto/`.
 
   `PaymentDto` (PRE-3590, revised) is `HostedFieldDto`'s sibling for paying with an
   already-created alias — no `hfToken`, no card data at all. Implements `PaymentRequestPayload`
@@ -396,8 +411,14 @@ running Docker daemon. The image builds automatically the first time any target 
   optional `recurringMode`). `paymentMethod` here is `array{details?: array{fullName?: string,
   selectedBrand?: string, validityDate?: string}}|null` — no `saveFutureUsage` in the shape, since
   creating an alias while paying with one makes no sense; it must not set `id` directly either
-  (`PaymentDtoValidator` rejects that). `createPayloadBody()` always merges `aliasId` into
-  `paymentMethod['id']` and passes both `paymentMethod` and `recurringMode` (unconditionally — both
+  (`PaymentDtoValidator` rejects that). `createPayloadBody()` always merges `aliasId` into both
+  `paymentMethod['id']` and `paymentMethod['storedId']` (PRE-3717: the changed Unified API contract
+  reads the alias from `paymentMethod.storedId` and rejects a request carrying it only as
+  `paymentMethod.id`; `id` is kept for platforms still on the previous contract — staging accepts
+  both together — same transition reasoning and removal condition as `HostedFieldDto`'s top-level
+  `hfToken` above; a caller-set `storedId` is rejected by `PaymentDtoValidator`, like `id`) and
+  passes both `paymentMethod` and
+  `recurringMode` (unconditionally — both
   are guaranteed non-null by the constructor, unlike `HostedFieldDto`'s conditional inclusion) to
   the same `BuildsCommonPayloadBody::buildPayloadBody()`, otherwise identical in shape to
   `HostedFieldDto`'s method. Matching tests in `tests/Dto/`.
@@ -556,7 +577,14 @@ running Docker daemon. The image builds automatically the first time any target 
   needs its own already-established exception type
   (`InvalidCommonFieldsException`/`InvalidOperationDataException`/`InvalidTokenException`) and
   none of them could be re-parented onto a shared one without changing every consumer's catch
-  behavior. Matching test in `tests/Utilities/Helpers/`.
+  behavior. It also holds the `paymentMethod` key guards shared by `HostedFieldDtoValidator`/
+  `PaymentDtoValidator`: `paymentMethodKeyNotSet(?array $paymentMethod, string $key, string $hint,
+  string $exceptionClass): void` throws `"paymentMethod must not set '<key>' directly; use <hint>
+  instead."` when the key is present (`array_key_exists()`, so even an explicit `null` value counts),
+  and `paymentMethodIdNotSet(?array $paymentMethod, string $hint, string $exceptionClass): void`
+  is that same check for `'id'` (PRE-3717 generalized it, so `'hfToken'`/`'storedId'` — keys the
+  DTOs now fill in themselves — reuse the same rule and message shape). Matching test in
+  `tests/Utilities/Helpers/`.
 - `Validators/` is a category of its own — split out from `Utilities/Helpers/` once more than one
   validator was expected, rather than growing that category indefinitely (see the
   top-level-categories bullet above). Holds three classes (same `final class` + private-constructor
@@ -589,7 +617,14 @@ running Docker daemon. The image builds automatically the first time any target 
   validator is back to two checks after the common-fields delegation: `Assert::notEmpty(hfToken,
   ...)`, then a defense-in-depth rejection of a caller-supplied `paymentMethod['id']`
   (`"paymentMethod must not set 'id' directly; use PaymentDto instead."` — that key belongs to
-  `PaymentDto`'s flow, never this one). A third, later check (this fix) is conditional rather than
+  `PaymentDto`'s flow, never this one) — and, since PRE-3717, of a caller-supplied
+  `paymentMethod['hfToken']` (`"paymentMethod must not set 'hfToken' directly; use the hfToken
+  constructor argument instead."`), since `createPayloadBody()` now fills that key in itself, and
+  of a caller-supplied `paymentMethod['storedId']` (`"paymentMethod must not set 'storedId'
+  directly; use PaymentDto instead."`): under the changed contract `storedId` is the key the API
+  reads a saved alias from, so a hosted-fields request carrying one next to its `hfToken` would be
+  ambiguous — the same alias-on-`HostedFieldDto` case the `id` check prevents. A
+  third, later check (this fix) is conditional rather than
   unconditional like the first two: a private `assertFullNameSetWhenSavingFutureUsage()` returns
   immediately unless `paymentMethod['saveFutureUsage']` is truthy per `filter_var(...,
   FILTER_VALIDATE_BOOLEAN)` (not a strict `=== true` — a CMS plugin building this array from form
@@ -613,7 +648,8 @@ running Docker daemon. The image builds automatically the first time any target 
   type. After that: `Assert::notEmpty(aliasId, ...)`, `Assert::notEmpty(recurringMode, ...)` — both
   mandatory (unlike `HostedFieldDto`'s optional `recurringMode`) — then the same
   `paymentMethod['id']`-rejection check as `HostedFieldDtoValidator`, message pointing instead to
-  "the `aliasId` constructor argument." A fourth, `PaymentDto`-only check (this fix) rejects a
+  "the `aliasId` constructor argument", extended in PRE-3717 to `paymentMethod['storedId']` (same
+  message shape), since `createPayloadBody()` now fills that key in itself too. A fourth, `PaymentDto`-only check (this fix) rejects a
   caller-supplied `paymentMethod['saveFutureUsage']` key outright (`array_key_exists()`, not a
   truthy check — the key itself is disallowed regardless of value): `PaymentDto`'s own docblock
   already documented that its `paymentMethod` shape has no `saveFutureUsage` field at all, since
@@ -667,7 +703,14 @@ running Docker daemon. The image builds automatically the first time any target 
   sibling service, since merged back onto this same class — see below) needed the same mechanics,
   per this file's own prior instruction not to duplicate the
   pattern a third time. `UnifiedApiPaymentService` (`final class`, extends `AbstractUnifiedApiService`) exposes three public
-  methods. `getPayment(string $paymentId): array{status: int, body: string}` — GETs `<baseUrl>/api/payment-gateway/payments/<paymentId>` and returns the raw HTTP response. It does not
+  methods. `getPayment(string $paymentId): array{status: int, body: string}` — GETs `<baseUrl>/api/payment-gateway/payments/<paymentId>` and returns the raw HTTP response. Since the
+  Unified API's 2026-10 contract change (PRE-3717), staging answers 404 ("No static resource
+  api/payment-gateway/payments/...") for every id tried — the payment's own id and its operation id
+  (observed 2026-10-05) — so this throws `PaymentNotFoundException` there; whether the route was
+  removed or moved is still to be confirmed with the API team, and until then a caller needing a
+  payment's current state should use `getOperation()` with the creation response's
+  `operationIds[0]`, which answers. Behavior and path are deliberately left unchanged pending
+  that answer. It does not
   parse the response into a value object: the full payment data model returned by the Unified API
   is explicitly out of scope for this ticket, deferred to a future one. `client_id`/`client_secret`/
   `baseUrl` are plain constructor arguments (matching `OAuth2Client`'s existing pattern) rather than
@@ -848,9 +891,12 @@ running Docker daemon. The image builds automatically the first time any target 
   `amount`, `currency`, `orderId`); the other 7 (`browser`, `customer`, `description`,
   `paymentMethod`, `descriptor`, `notificationUrl`, `extraData`) were added after
   cross-checking the Unified API's own OpenAPI schema (the "server-to-server" gitbook page's prose
-  only covers the raw-card variant and doesn't show where `hfToken` goes — a real hosted-fields
-  Postman example from the Unified API team confirmed `hfToken` is a top-level body field, not
-  nested under `paymentMethod`). Only `account` and `amount` are required per the doc;
+  only covers the raw-card variant and doesn't show where `hfToken` goes). Since the API's 2026-10
+  contract change (PRE-3717), the token is read from `paymentMethod.hfToken`, and a request
+  carrying it only at the top level is rejected with 400; the library sends both for the
+  transition (see `Dto/` above). Historical note: a real hosted-fields Postman example from the
+  Unified API team had originally shown `hfToken` as a top-level body field, which is why the
+  top-level copy exists at all. Only `account` and `amount` are required per the doc;
   `paymentMethod`, `currency`, `orderId`, `hfToken`, `browser`, `customer`, `description`,
   `descriptor`, `notificationUrl`, `extraData` are all optional — contradicting the ticket's implied
   4-required-parameter shape; the doc is treated as the source of truth over the ticket text.
@@ -875,7 +921,7 @@ running Docker daemon. The image builds automatically the first time any target 
   `{"account": {"id": $dto->common->accountId}, "amount", "currency", "orderId",
   "submerchantExternalId", "description": $dto->common->description, "capture":
   $dto->common->capture, "hfToken"}`, plus `"paymentMethod"`
-  (set directly from the DTO's `paymentMethod` property — its shape mirrors the Unified API's own
+  (the DTO's `paymentMethod` property, with `hfToken` merged in as its first key since PRE-3717 — its shape mirrors the Unified API's own
   nesting exactly, e.g. `['details' => ['fullName' => ..., 'selectedBrand' => ...]]`, rather than
   being reconstructed from a flatter parameter), `"browser"`, `"customer"`,
   `"descriptor"`, `"notificationUrl"`, `"extraData"` — each added only when the corresponding
@@ -883,12 +929,15 @@ running Docker daemon. The image builds automatically the first time any target 
   `descriptor`/`notificationUrl`/`extraData` — see `Dto/` above) is non-null; `description` is
   always present regardless, even as `null`, per the same required-skeleton reasoning as
   `submerchantExternalId`.
-  `paymentMethod` is omitted entirely when that property is null **or an empty array** (not
-  required, and a non-empty-but-still-array PHP value would `json_encode()` to `[]`, not `{}`) —
-  the empty-array case is checked explicitly rather than relying on the null check alone, since a
-  caller passing `[]` instead of `null` is otherwise indistinguishable from one that means to send
-  data. Two unit tests assert on `json_encode()`'s actual output rather than PHP array equality, to
-  catch that mismatch. `"redirect"` is added only when `successUrl` **or** `cancelUrl` is non-null,
+  `paymentMethod` is **always** present for a `HostedFieldDto` since PRE-3717: it carries at least
+  `{"hfToken": …}`, merged ahead of the caller's own `paymentMethod` array, even when that property
+  is `null` or `[]` — omitting it would bring back the 400 the changed contract returns for a
+  token sent only at the top level. Because the token key is always there, the body never
+  `json_encode()`s `paymentMethod` to `[]` (the empty-array-vs-object pitfall that originally
+  made the omission necessary). Two unit tests assert on `json_encode()`'s actual output rather
+  than PHP array equality (`...JsonEncodedOutputCarriesOnlyTheTokenInPaymentMethodWhenNotProvided`,
+  `...JsonEncodedOutputSerializesPaymentMethodAsAnObject`), plus
+  `testCreatePayloadBodySendsOnlyTheTokenInPaymentMethodWhenItIsAnEmptyArray`. `"redirect"` is added only when `successUrl` **or** `cancelUrl` is non-null,
   and nests only whichever of the two is actually set — a caller providing just one (e.g. only
   `cancelUrl`, if a merchant-level default already covers the success path) still gets a valid
   partial `redirect` object rather than either field silently being sent as `null`.
@@ -928,8 +977,10 @@ running Docker daemon. The image builds automatically the first time any target 
   and to surface any alias involved: the response body is decoded once, then a private
   `extractNestedString()` reads `redirect.url` off it for `PaymentOutput::$redirectUrl` (`null` on
   direct success, though in practice only reachable via `card.threeDSecure.displayMode=raw` on the
-  request — see `Output/` above) and `paymentMethod.id` for `PaymentOutput::$aliasId` (`null` when
-  the operation didn't involve an alias) — one shared method for both derived fields (PRE-3590 code
+  request — see `Output/` above) and the alias for `PaymentOutput::$aliasId` — `paymentMethod.storedId`,
+  where the changed Unified API contract returns it, falling back to `paymentMethod.id`, where the
+  previous contract did (PRE-3717, via a private `extractAliasId()` built on the same extractor)
+  (`null` when the operation didn't involve an alias) — one shared method for both derived fields (PRE-3590 code
   review), rather than two near-identical extractors each re-decoding the same body. A decoded value
   that isn't an array (malformed JSON), or is missing/non-string at the requested path, yields
   `null` rather than throwing, since this method extracts one derived field at a time, it does not
@@ -1143,7 +1194,8 @@ running Docker daemon. The image builds automatically the first time any target 
   skeleton rather than among the optional fields below it, always present in the body (even as
   `null`) rather than conditionally omitted, since the Unified API needs the key present at all —
   splices in the caller's own payment-method-specific fields (preserving their key order — e.g.
-  `HostedFieldDto`'s `hfToken`, `PaymentDto`'s `paymentMethod`/`recurringMode`), then appends
+  `HostedFieldDto`'s `hfToken`/`paymentMethod`/`recurringMode`, `PaymentDto`'s
+  `paymentMethod`/`recurringMode`), then appends
   `browser`/`customer` (via `->toArray()`, when non-null), `descriptor`/`notificationUrl`/
   `extraData` (each when non-null), `billing`/`shipping` (each set directly from
   `$this->common->billing->toArray()`/`$this->common->shipping->toArray()`, only when non-null —

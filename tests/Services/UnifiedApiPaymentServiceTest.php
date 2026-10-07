@@ -623,6 +623,39 @@ final class UnifiedApiPaymentServiceTest extends MockeryTestCase
         self::assertSame('alias_789', $result->aliasId);
     }
 
+    /**
+     * Response shape since the Unified API contract change (observed on staging 2026-10-05,
+     * PRE-3717): the alias comes back as paymentMethod.storedId, and the response may carry no
+     * top-level id at all.
+     */
+    public function testCreatePaymentExtractsTheAliasIdFromPaymentMethodStoredId(): void
+    {
+        $body = json_encode(['execCode' => '0000', 'operationIds' => ['op_1'], 'paymentMethod' => ['storedId' => 'alias_stored']]);
+
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 200, 'body' => $body]);
+
+        $service = $this->makeService($httpClient);
+
+        $result = $service->createPayment(HostedFieldDtoBuilder::valid()->build());
+
+        self::assertSame('alias_stored', $result->aliasId);
+    }
+
+    public function testCreatePaymentPrefersPaymentMethodStoredIdOverPaymentMethodId(): void
+    {
+        $body = json_encode(['id' => 'pay_123', 'paymentMethod' => ['id' => 'alias_legacy', 'storedId' => 'alias_stored']]);
+
+        $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);
+        $httpClient->shouldReceive('postJson')->once()->andReturn(['status' => 200, 'body' => $body]);
+
+        $service = $this->makeService($httpClient);
+
+        $result = $service->createPayment(HostedFieldDtoBuilder::valid()->build());
+
+        self::assertSame('alias_stored', $result->aliasId);
+    }
+
     public function testCreatePaymentReturnsNullAliasIdWhenTheResponseHasNone(): void
     {
         $httpClient = Mockery::mock(IUnifiedApiHttpClient::class);

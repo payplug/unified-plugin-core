@@ -24,9 +24,12 @@ namespace PayplugUnifiedCore\Output;
  * webhook/3DS-return confirmation comes back — this class only carries what's known synchronously,
  * at creation time.
  *
- * aliasId (PRE-3590) carries the Unified API's paymentMethod.id from the response — the alias that
- * was just created (hfToken + paymentMethod.saveFutureUsage) or reused (aliasId-based payment).
- * null when the operation didn't involve an alias at all.
+ * aliasId (PRE-3590) carries the alias that was just created (hfToken + paymentMethod.saveFutureUsage)
+ * or reused (aliasId-based payment), read from the response's paymentMethod.storedId — or
+ * paymentMethod.id, where the previous Unified API contract returned it (PRE-3717). null when the
+ * operation didn't involve an alias at all — and, under the current contract, also for a payment
+ * made with an existing alias (PaymentDto): the response no longer echoes the alias back in that
+ * case (observed on staging 2026-10-06), so a caller must rely on the alias it sent, not on this.
  *
  * maxCaptureDate/remainingCapturableAmount: only set for an authorization-only creation
  * (capture === false).

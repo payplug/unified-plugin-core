@@ -101,6 +101,13 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
     private const ISSUER_REFUSAL_EXEC_CODE_PREFIX = '4';
 
     /**
+     * Since the Unified API contract change (PRE-3717), this route answers 404 ("No static
+     * resource api/payment-gateway/payments/...") on staging for every id tried — the payment's
+     * own id as well as its operation id (observed 2026-10-05), so it surfaces as
+     * PaymentNotFoundException. Whether the route was removed or moved is still to be confirmed
+     * with the API team; until then, a caller needing a payment's current state should use
+     * getOperation() with the payment-creation response's operationIds[0], which answers.
+     *
      * @return array{status: int, body: string}
      * @throws PaymentNotFoundException if the Unified API has no payment with that id (HTTP 404).
      *                                  A sibling of ApiException, not a subclass — catching
@@ -194,10 +201,25 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
             $response['body'],
             $this->extractNestedString($data, 'redirect', 'url'),
             $this->extractRedirectHtml($data),
-            $this->extractNestedString($data, 'paymentMethod', 'id'),
+            $this->extractAliasId($data),
             $this->extractTopLevelString($data, 'maxCaptureDate'),
             $this->extractRemainingCapturableAmountAtCreation($data, $isAuthorizationOnly)
         );
+    }
+
+    /**
+     * The alias created (hfToken + paymentMethod.saveFutureUsage) or reused (PaymentDto-based
+     * payment) by this call. Since the Unified API contract change (observed on staging
+     * 2026-10-05, confirmed intentional 2026-10-06, PRE-3717) it comes back as
+     * paymentMethod.storedId; paymentMethod.id, what the previous contract returned, is still read
+     * as a fallback so a platform still on that contract keeps working.
+     *
+     * @param mixed $data the json_decode()'d response body
+     */
+    private function extractAliasId($data): ?string
+    {
+        return $this->extractNestedString($data, 'paymentMethod', 'storedId')
+            ?? $this->extractNestedString($data, 'paymentMethod', 'id');
     }
 
     /**
@@ -220,7 +242,8 @@ final class UnifiedApiPaymentService extends AbstractUnifiedApiService
     /**
      * Reads a two-level-nested string field out of the already-decoded response body — the
      * presence of "redirect.url" in an otherwise-2xx response is the Unified API's own signal that
-     * 3DS/SCA authentication is pending; "paymentMethod.id" echoes back an alias just created
+     * 3DS/SCA authentication is pending; "paymentMethod.storedId" (or "paymentMethod.id" on the
+     * previous contract, see extractAliasId()) echoes back an alias just created
      * (hfToken + paymentMethod.saveFutureUsage) or reused (PaymentDto-based payment). $data being
      * anything other than an array (a body that wasn't valid JSON) or missing/non-string at that
      * path yields null rather than an exception: this method only extracts one derived field at a
