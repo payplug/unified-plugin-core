@@ -46,6 +46,10 @@ check('PhoneHelper::toE164', function () {
     return PhoneHelper::toE164('0612345678', 'FR') === '+33612345678';
 }, $failures);
 
+check('PhoneHelper::toE164 without region match', function () {
+    return PhoneHelper::toE164('+33612345678', 'DE', false) === '+33612345678';
+}, $failures);
+
 check('PhoneHelper::isMobile true', function () {
     return PhoneHelper::isMobile('0612345678', 'FR') === true;
 }, $failures);
