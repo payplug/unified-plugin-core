@@ -547,12 +547,19 @@ running Docker daemon. The image builds automatically the first time any target 
   amount at the API boundary: the CMS converts through `AmountHelper` with the order's currency,
   and the Unified API receives that integer unchanged.
 - `PhoneHelper` (same `final class` + private-constructor pattern as `AmountHelper`) centralizes
-  phone number normalization — `toE164(string $phone, string $countryCode): string` and
-  `isMobile(string $phone, string $countryCode): bool` — previously duplicated between plugins (PS
+  phone number normalization — `toE164(string $phone, string $countryCode, bool
+  $requireRegionMatch = true): string` and `isMobile(string $phone, string $countryCode, bool
+  $requireRegionMatch = true): bool` — previously duplicated between plugins (PS
   `PhoneHelper.php`, WC's `PayplugAddressData` parsing), backed by `giggsey/libphonenumber-for-php`.
   `$countryCode` is a 2-letter ISO 3166-1 alpha-2 region code (the UK's is `GB`, not `UK`). Both
   methods share a private `parse()` helper; any unparseable/invalid input throws
-  `InvalidPhoneNumberException` from both. This is the library's first helper with a real runtime
+  `InvalidPhoneNumberException` from both. `$requireRegionMatch` (PRE-3751): `true` (default)
+  requires the number to be valid AND to belong to `$countryCode`; `false` accepts any valid
+  number, `$countryCode` is only the default region for national formats, and the E.164 / line
+  type come from the number's own country (an unsupported `$countryCode` still throws). Plugins
+  keep `true` for payment methods that need the phone to match the address country. Overseas
+  territory equivalence with FR (a metropolitan 06/07 on a GP/MQ/RE address) is not handled in
+  UPC; consuming plugins do it themselves. This is the library's first helper with a real runtime
   dependency — see "Constraints to preserve" below for the PHP 7.1 floor implications that came
   with it, and `make verify-71` for how that floor is actually verified.
 - `PkceHelper` (PRE-3563, same `final class` + private-constructor pattern as `AmountHelper`/
