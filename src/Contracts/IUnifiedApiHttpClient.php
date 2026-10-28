@@ -13,6 +13,10 @@ namespace PayplugUnifiedCore\Contracts;
  * curl double does — never has to guess which body encoding a single shared method should apply.
  * UPC makes no network call itself; the CMS plugin supplies whatever HTTP stack it already has.
  *
+ * DomainAssociationService also uses get() to fetch a public file from secure.payplug.com, with no
+ * headers at all: an implementation must send only the headers it is given (never a bearer token
+ * added on its own), verify TLS, and time out after a few seconds.
+ *
  * Sylius implementation sketch:
  * <code>
  * final class GuzzleUnifiedApiHttpClient implements IUnifiedApiHttpClient
