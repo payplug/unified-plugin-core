@@ -16,18 +16,23 @@ backed by `giggsey/libphonenumber-for-php`, the library's first real runtime dep
 dependency-free, maps a Payplug execCode to a `PaymentOutcome`; `WebhookNotificationHelper`,
 dependency-free, verifies and parses an asynchronous payment notification; and `Assert`,
 dependency-free, shared empty/negative/positive field checks reused by `CommonFieldsDtoValidator`/
-`OperationData`/`TokenOutput`); two durable,
+`OperationData`/`TokenOutput`); durable,
 direction-agnostic value types under `src/DataValues/` (`PaymentOutcome`, payment-result constants;
-`OperationData`, the validating persistence value object `IPaymentRepository` will work with);
-three internally-produced value objects under `src/Output/` (`TokenOutput`, validating OAuth2 token
+`AuthorizationType`, authorization-only creation types; `DomainAssociationEnvironment`, the Payplug
+platform an Apple Pay domain-association file comes from; `OperationData`, the validating
+persistence value object `IPaymentRepository` will work with);
+six internally-produced value objects under `src/Output/` (`TokenOutput`, validating OAuth2 token
 value object; `AuthorizationRequestOutput`, unvalidated PKCE redirect output; `PaymentOutput`,
 unvalidated payment-creation output, also carrying the alias identifier created or reused by
-that call); the 8 core interfaces under `src/Contracts/`
+that call; `CaptureOutput`/`CancellationOutput`, the capture/cancellation outputs; `DomainAssociationRefreshResult`,
+the outcome of an Apple Pay domain-association refresh); the 9 core interfaces under
+`src/Contracts/`
 (`ILogger`, `IConfigurationRepository`, `IPaymentRepository`, `IOrderStateMutator`, `ILock`,
-`ITokenCache`, `IOAuthHttpClient`, `IUnifiedApiHttpClient`) that define the boundary between UPC
+`ITokenCache`, `IOAuthHttpClient`, `IUnifiedApiHttpClient`, `IDomainAssociationStorage`) that
+define the boundary between UPC
 and each consuming CMS plugin, plus `PaymentRequestPayload` (moved here from `Dto/`, see that
 bullet below for why it's still a plain descriptive name rather than following the `I`-prefix
-convention the other 8 use); `src/Auth/` (`OAuth2Client`, `TokenManager`) implementing the
+convention the other 9 use); `src/Auth/` (`OAuth2Client`, `TokenManager`) implementing the
 OAuth2/PKCE and client-credentials flows against the identity provider; `src/Services/`
 (`AbstractUnifiedApiService`, `UnifiedApiPaymentService`) using
 that JWT to call the Unified API to fetch a payment (PRE-3576) and, as of PRE-3587, to
@@ -43,7 +48,11 @@ or in a later, deferred call, one or several times, full or partial) or cancelli
 default, partial when an amount is given) a payment or authorization, producing a `CaptureOutput`/
 `CancellationOutput` respectively — an authorization itself is not a new call at all, just
 `createPayment()` with `CommonFieldsDto::$capture` set to `false`, optionally alongside the new
-`partialAuthorization` flag and/or `AuthorizationType`; and two more
+`partialAuthorization` flag and/or `AuthorizationType`. `src/Services/` also holds
+`DomainAssociationService` (PRE-3655), the one unauthenticated service: it fetches, validates and
+stores the Apple Pay domain-association file of the production or QA Payplug platform, which each
+plugin serves on its `.well-known` route;
+and two more
 categories: `src/Dto/` (`HostedFieldDto`, `hfToken`-driven hosted-fields payment, optionally also
 creating an alias via `recurringMode`; `PaymentDto`, paying with an already-created alias instead,
 no `hfToken` at all; `BillingDto`/
@@ -55,7 +64,8 @@ fields, wired in via `CommonFieldsDto::$billing`/`$shipping`);
 and
 `src/Validators/`
 (`HostedFieldDtoValidator`, `PaymentDtoValidator`, and `CommonFieldsDtoValidator`, which check
-`HostedFieldDto`, `PaymentDto`, and `CommonFieldsDto` respectively before use).
+`HostedFieldDto`, `PaymentDto`, and `CommonFieldsDto` respectively before use; and
+`DomainAssociationValidator`, which checks an Apple Pay domain-association file).
 
 ## Commands
 
@@ -172,7 +182,16 @@ running Docker daemon. The image builds automatically the first time any target 
   authorization-only creation (`CommonFieldsDto::$capture === false`): `PRE_AUTHORIZATION`
   (`'pre_authorization'`) and `FINAL_AUTHORIZATION` (`'final_authorization'`) — the API accepts
   either casing, so `isValid()` compares case-insensitively even though the constants themselves
-  use lower snake_case as the canonical form. `OperationData` is the persistence value object
+  use lower snake_case as the canonical form. `DomainAssociationEnvironment` (PRE-3655, same
+  pattern) holds the Payplug platforms an Apple Pay domain-association file can come from:
+  `PRODUCTION` (`'production'`, `secure.payplug.com`) and `QA` (`'qa'`, Payplug's QA platform,
+  `secure-qa.payplug.com`). Each value selects a source URL on `DomainAssociationService` and an
+  expected pspId on `DomainAssociationValidator`, both frozen in UPC; the plugin passes the platform
+  it already talks to, the same one as its `baseUrl`. Unlike `AuthorizationType`, `isValid()` is an
+  exact, case-sensitive match: the value selects a frozen URL/pspId pair rather than echoing an API
+  field, so only the constants themselves are accepted. Added after the first PR review round,
+  when a QA file (with its own pspId) turned out to exist next to the production one; the first
+  version accepted the production file only. `OperationData` is the persistence value object
   `IPaymentRepository` (PRE-3467, not yet
   implemented) will work with: public properties (`operationId`, `execCode`, `outcome`, `amount`,
   `orderId`, each with a `/** @var */` docblock — PHP 7.1 predates typed properties) set through a
@@ -277,6 +296,21 @@ running Docker daemon. The image builds automatically the first time any target 
   once any capture has occurred, neither field should be reused to build a follow-up
   `capturePayment()`/`cancelPayment()` call without independently confirming the real remaining
   balance.
+
+  `DomainAssociationRefreshResult` (PRE-3655) is the output of
+  `DomainAssociationService::refresh()` (see `Services/` below): `status`, one of the string constants `STATUS_UPDATED` (`'updated'`),
+  `STATUS_UNCHANGED` (`'unchanged'`) and `STATUS_FAILED` (`'failed'`) — strings rather than ints so
+  an adapter can log or display them directly — and `error`, an English sentence, `null` unless the
+  refresh failed; plus `isFailed(): bool`. `error` may embed a raw exception message from the CMS
+  HTTP client or storage, so it must be escaped when displayed (stated on the property and in the
+  class docblock example; see `DomainAssociationService` below). Unvalidated like its siblings, but
+  unlike them its constructor is private: the named constructors `updated()`, `unchanged()` and
+  `failed(string $error)` are the only way to build one, and they set `error !== null` exactly when
+  the status is `STATUS_FAILED`, without any validation code. That is how it is built, not a
+  guarantee: both properties stay public and writable, like in the other `Output/` classes. Named
+  `RefreshResult` in the first version of PRE-3655, renamed before release so it cannot be mistaken
+  for a token-refresh result (`TokenManager::refreshToken()`). There is no error code next to the
+  sentence. Matching test in `tests/Output/`.
 - `Dto/` is a category of its own — split out from `Models/` once more than one DTO was expected,
   rather than growing `Models/` indefinitely (see the top-level-categories bullet above). Holds
   ten classes, all assembled by the CMS plugin itself as input to a
@@ -427,10 +461,10 @@ running Docker daemon. The image builds automatically the first time any target 
   are guaranteed non-null by the constructor, unlike `HostedFieldDto`'s conditional inclusion) to
   the same `BuildsCommonPayloadBody::buildPayloadBody()`, otherwise identical in shape to
   `HostedFieldDto`'s method. Matching tests in `tests/Dto/`.
-- `Contracts/` holds the 8 interfaces that define the boundary between UPC and each consuming CMS
+- `Contracts/` holds the 9 interfaces that define the boundary between UPC and each consuming CMS
   plugin (first real consumer: UHF/Sylius) — designed around what a CMS needs to provide, not
   around the not-yet-built Unified API's shape, so they survive that later transition intact. All
-  8 are pure interfaces (no logic, nothing for PHPUnit to exercise — PHPStan level 8 verifies
+  9 are pure interfaces (no logic, nothing for PHPUnit to exercise — PHPStan level 8 verifies
   signatures statically instead), PHP 7.1-compatible, each with a class-level docblock sketching
   one Sylius and one WooCommerce implementation (illustrative only, not shipped code) instead of
   the single-call-site `<code>` example used by `Utilities/Helpers/`. `ILogger` (`debug`/`info`/
@@ -466,14 +500,28 @@ running Docker daemon. The image builds automatically the first time any target 
   token+JSON) are different enough shapes that sharing one contract would blur both. `postJson` is
   named distinctly from `IOAuthHttpClient::post()` (not reusing "post") specifically so a class
   implementing both contracts — as `tests/Integration/Support/CurlHttpClient` does — never has to
-  guess which body encoding a single shared method name should apply. `PaymentRequestPayload`
+  guess which body encoding a single shared method name should apply. `IDomainAssociationStorage`
+  (PRE-3655; `readContent(): ?string`, `writeContent(string $content): void`, `readStatus(): array`,
+  `writeStatus(array $status): void`; `writeStatus()` receives the full shape `array{lastAttemptAt:
+  ?int, lastSuccessAt: ?int, lastError: ?string}`, while `readStatus()` declares every key optional,
+  `array{lastAttemptAt?: ?int, lastSuccessAt?: ?int, lastError?: ?string}`, so an adapter returning
+  `[]` or a partial record passes PHPStan without an ignore) stores the Apple Pay domain-association file and a status record for the
+  plugin's diagnostics screen, in the CMS's own settings storage (options, a key/value table) —
+  never as a real file under the web root, which would bypass the plugin's route. Its docblock
+  lists the implementer's obligations: `readContent()` returns exactly what `writeContent()`
+  received (no trim, re-encoding, BOM, newline normalisation or slashing; a column type that holds
+  the full content), `readStatus()` may return an empty or partial array when nothing is stored,
+  and any method may throw, since `DomainAssociationService` contains it; it also states that
+  `lastError` may contain a raw exception message and must be escaped when displayed.
+  `IConfigurationRepository` and `ITokenCache` were not reused: the first holds OAuth credentials,
+  the second has TTL semantics the file does not have. `PaymentRequestPayload`
   (PRE-3590, moved here from `Dto/`) is a one-method interface — `createPayloadBody(): array` —
   implemented by both `HostedFieldDto` and `PaymentDto` (see `Dto/` above); it exists purely so
   `UnifiedApiPaymentService::createPayment()` (see `Services/` below) can accept either without a
   native PHP union type, which this repo's PHP 7.1 floor doesn't support. Housed here despite not
-  following the other 8 interfaces' `I`-prefix convention: unlike those 8, which are the UPC↔CMS
+  following the other 9 interfaces' `I`-prefix convention: unlike those 9, which are the UPC↔CMS
   boundary specifically, this one is internal plumbing between two DTOs and one service — kept a
-  plain descriptive name on purpose so it doesn't read as a ninth UPC↔CMS contract.
+  plain descriptive name on purpose so it doesn't read as a tenth UPC↔CMS contract.
 - `Utilities/Helpers/` holds small static utility classes — no CMS calls, no network calls; most
   are also dependency-free, but that's not a hard rule (see `PhoneHelper` below). The first one,
   `AmountHelper`, centralizes conversion between a major-unit float amount and the integer number
@@ -650,7 +698,7 @@ running Docker daemon. The image builds automatically the first time any target 
   `tests/Utilities/Helpers/`.
 - `Validators/` is a category of its own — split out from `Utilities/Helpers/` once more than one
   validator was expected, rather than growing that category indefinitely (see the
-  top-level-categories bullet above). Holds three classes (same `final class` + private-constructor
+  top-level-categories bullet above). Holds four classes (same `final class` + private-constructor
   pattern as the `Utilities/Helpers/` classes above). `CommonFieldsDtoValidator::validate(
   CommonFieldsDto $dto): void` checks `accountId`/`orderId`/`currency` non-empty and `amount` not
   negative, throwing the new `InvalidCommonFieldsException` (10th subtype in the `Exceptions/`
@@ -718,6 +766,32 @@ running Docker daemon. The image builds automatically the first time any target 
   already documented that its `paymentMethod` shape has no `saveFutureUsage` field at all, since
   creating an alias while paying with one makes no sense, but nothing enforced that at runtime
   until now. Matching tests for both validators in `tests/Validators/`.
+
+  `DomainAssociationValidator::isValid(string $raw, string $environment =
+  DomainAssociationEnvironment::PRODUCTION): bool` (PRE-3655) checks that a string is the Apple Pay
+  domain-association file of the given Payplug environment. It diverges from the other three on purpose: no
+  DTO, no exception, a `bool` — both callers (`DomainAssociationService::resolve()` on a stored
+  value about to be served on a public route, `refresh()` on a freshly fetched one) treat invalid
+  content as a branch, and a throwing form would force a try/catch on the serving path. Rules, in
+  order: reject a raw input longer than 64 KiB (`MAX_LENGTH = 65536`, checked on the raw string
+  first; the real file is about 9 KB, and the cap bounds the work spent on a large HTML page);
+  strip only trailing `"\r"`/`"\n"`, on a copy (`rtrim($raw, "\r\n")`, not `trim()`: leading
+  whitespace, trailing spaces/tabs and a UTF-8 BOM are rejected rather than tolerated, since the
+  content is served verbatim); reject an empty or odd-length string, or anything not matching
+  `/^[0-9A-Fa-f]+$/D` (`D` so `$` does not match before a trailing newline); `hex2bin()` then
+  `json_decode(..., true, 16)` (bounded depth) must give an array; `pspId` must be a string
+  (`is_string()`, so an array value cannot raise an "Array to string conversion" notice) equal,
+  case-insensitively, to the environment's public constant held on the validator itself:
+  `PROD_PSP_ID` (`'0E0C552360010ECC0B5A039C787913D7AC0294C406F4AD7978FF5619BDF31977'`) or
+  `QA_PSP_ID` (`'8AA6F4941A057694381109ACBFD6135D3D3D8DC87FADE3B1CD59B09D6A893470'`, read from
+  `secure-qa.payplug.com` on 2026-11-02) — the check that rejects the other environment's file. An
+  unknown `$environment` makes every content invalid instead of throwing, since this also runs on
+  the serving path. Keeping the constants here leaves the dependency one-way, service → validator.
+  Accepted consequence: if either pspId ever changes, `refresh()` rejects the new file and keeps
+  serving the old one, and the fix is a UPC release updating the constant followed by a release of
+  each consuming plugin.
+  Depends only on `pcre` and `json`. Matching test in `tests/Validators/`, fixtures in
+  `tests/Support/DomainAssociationFixtures`.
 - `src/Auth/` (PRE-3563) holds the two classes with real OAuth2 logic — everything else this
   ticket adds (`IOAuthHttpClient`, `PkceHelper`, `TokenOutput`, `AuthorizationRequestOutput`, both
   renamed from `Token`/`AuthorizationRequest` when `Models/` was later split into `DataValues/`/
@@ -757,7 +831,8 @@ running Docker daemon. The image builds automatically the first time any target 
   so a failed mint still leaves the rejected token gone instead of replaying it; both methods share
   a private `mintAndCache()`.
 - `src/Services/` (PRE-3576, extended PRE-3587) holds application services that use `Auth/`'s JWT
-  to call the Unified API. `AbstractUnifiedApiService` (`abstract class`, PRE-3587) holds the
+  to call the Unified API — all but `DomainAssociationService`, described at the end of this
+  bullet. `AbstractUnifiedApiService` (`abstract class`, PRE-3587) holds the
   mechanics shared by every concrete service: resolving a client-credentials JWT via the injected
   `TokenManager`/`IUnifiedApiHttpClient`/`baseUrl`/`clientId`/`clientSecret` (all `protected`
   constructor-set properties), a protected `sendGet(string $url)` and
@@ -1247,6 +1322,82 @@ running Docker daemon. The image builds automatically the first time any target 
   shared fixture state (same precedent as `createRefund()`'s own integration test); the exact
   exception type these two tests get back is deliberately not asserted narrowly, only that some
   `PayplugException` carrying a 4xx/5xx code came back.
+
+  `DomainAssociationService` (`final class`, PRE-3655) is the one service that does **not** extend
+  `AbstractUnifiedApiService` and uses no JWT. It fetches the Apple Pay domain-association file, a
+  public static file at `SOURCE_URL`
+  (`https://secure.payplug.com/.well-known/apple-developer-merchantid-domain-association`) in
+  production or `QA_SOURCE_URL` (same path on `https://secure-qa.payplug.com`) in QA: no
+  token, no `Authorization` header, no credentials, which is what lets a plugin call it at install
+  time, before the merchant has connected an account. Extending the abstract class would have
+  forced `TokenManager`/`clientId`/`clientSecret` arguments that make no sense here. Constructor:
+  `(IUnifiedApiHttpClient $http, IDomainAssociationStorage $storage, ILogger $logger, string
+  $environment = DomainAssociationEnvironment::PRODUCTION)`; the environment selects the source URL
+  and the pspId the validator expects, and an unknown value throws `\InvalidArgumentException` at
+  construction (a wiring mistake, same reasoning as `createPayment()`'s `\LogicException` guard,
+  so no new `PayplugException` subtype). `IUnifiedApiHttpClient::get()` is reused as is (no new
+  HTTP contract) and called with the URL as its only argument. The source URLs, like the pspIds the
+  file must carry (`DomainAssociationValidator::PROD_PSP_ID`/`QA_PSP_ID`, see `Validators/` above),
+  are frozen in UPC rather than in each plugin. Switching a plugin from one environment to the
+  other needs no migration: the stored file fails the new environment's validation, so
+  `resolve()` returns `null` and the next `ensureStored()` fetches the right one. None of its three
+  public methods throws:
+  `resolve(): ?string` never calls the network: it returns the stored content byte for byte when
+  `DomainAssociationValidator::isValid()` accepts it, `null` otherwise (the route then answers
+  404). A throwing `readContent()` is logged (`apple_pay.well_known.resolve_failed`) and also
+  yields `null`, since this runs on a public route where a storage fault must be a 404, not a 500.
+  `ensureStored(): void` calls `refresh()` only when `resolve()` returns `null` — what adapters call
+  on install and on the first upgrade that ships the feature; later upgrades download nothing.
+  `refresh(): DomainAssociationRefreshResult` is the only network entry point (first sync, the
+  admin Resync button, a CLI command; there is no scheduled task). It catches any `\Throwable` from the HTTP client, not
+  just `\Exception` (real clients throw `RuntimeException`, Guzzle exceptions, or a `\TypeError`
+  from a misused CMS helper); checks the response shape strictly (an array whose `status` is an
+  `int` and `body` a `string` — a numeric-string `'200'`, or the `''` code WordPress returns on a
+  transport error, is rejected as malformed rather than coerced); requires HTTP 200, then a valid
+  body, each with its own failure message; then compares the body with the stored content (`!==`)
+  and writes it verbatim only when it differs. The status record is written on every attempt,
+  always with exactly its three keys: on success `lastAttemptAt = lastSuccessAt = time()` and
+  `lastError = null`, even when the content is unchanged, so the diagnostics screen shows the last
+  successful sync; on failure `lastAttemptAt = time()`, `lastError` set, and `lastSuccessAt` kept
+  from the previous record when it is an `int` or a digit string (`/^\d+$/D`, cast to `int`), the
+  form a store keeping each key as a string setting hands back; anything else from a partial or
+  corrupted store becomes `null`. Failure messages, stored in `lastError` and returned in
+  `DomainAssociationRefreshResult::$error`, are English sentences:
+  `Source unreachable: <class>: <message>`, `Source returned a malformed HTTP response.`,
+  `Unexpected HTTP status <status> from <host>.` (any status other than 200),
+  `Invalid domain-association content received from <host>.` (a 200 whose body
+  `DomainAssociationValidator` rejects: an HTML page, the other environment's file, a truncated
+  file), where `<host>` is `secure.payplug.com` or `secure-qa.payplug.com`, and
+  `Could not store the file: <class>: <message>`; the response body is never logged. The
+  exception `<message>` is capped at 500 bytes (`MAX_EXCEPTION_MESSAGE_BYTES`), followed by `...`
+  when cut, so a huge message cannot bloat the status column or the logs; a multibyte character
+  left incomplete by the cut is dropped (pcre only, no `mbstring`), so the stored text stays valid
+  UTF-8 for a store that `json_encode()`s it. Every failure
+  logs `apple_pay.well_known.refresh_failed` at error level with `['message' => <same text>]`.
+  Storage exceptions are contained, not propagated: a throwing `readContent()`/`writeContent()`
+  during a refresh fails it and leaves the previous copy in place; a throwing `readStatus()` is
+  logged (`apple_pay.well_known.status_read_failed`) and `lastSuccessAt` becomes `null`; a throwing
+  `writeStatus()` is logged (`apple_pay.well_known.status_write_failed`) and the result is returned
+  as is (after a successful content write the file is correct, only the diagnostic date is stale).
+  An already-stored valid file therefore keeps being served whatever fails. No lock: two
+  concurrent refreshes both write the same valid bytes.
+
+  Adapter obligations, documented on the class and on the contract or output each one concerns:
+  - an HTTP client that verifies TLS, times out after a few seconds (cURL has no timeout by
+    default) and adds no credentials of its own (the class, `IUnifiedApiHttpClient`);
+  - the `DomainAssociationEnvironment` matching the Payplug platform the plugin talks to (the
+    class constructor);
+  - byte-exact storage (`IDomainAssociationStorage`);
+  - a plain-text response on the route (the class);
+  - escaping `DomainAssociationRefreshResult::$error` and the stored `lastError` whenever they are displayed, since
+    both may embed a raw exception message from the CMS HTTP client or storage
+    (`get_class($e) . ': ' . $e->getMessage()`) and would otherwise be an XSS vector on the
+    diagnostics screen (the class, `DomainAssociationRefreshResult`, `IDomainAssociationStorage`).
+
+  Purely additive, so it ships in a minor release. Matching unit test in `tests/Services/` (mocked
+  `IUnifiedApiHttpClient`/`ILogger`, the in-memory `tests/Support/InMemoryDomainAssociationStorage`);
+  no integration test. `scripts/verify-php71-smoke.php` also exercises the validator and
+  `DomainAssociationRefreshResult` under PHP 7.1.
 - `Traits/` is a category of its own — split out from `Dto/` once `PaymentRequestPayload`
   (moved to `Contracts/`, see that bullet above) and two traits no longer read as DTO input/output
   shapes themselves, just internal plumbing shared across DTOs. Holds two traits.

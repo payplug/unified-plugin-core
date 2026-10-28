@@ -6,10 +6,13 @@ $autoloadPath = isset($argv[1]) ? $argv[1] : __DIR__ . '/../vendor/autoload.php'
 
 require $autoloadPath;
 
+use PayplugUnifiedCore\DataValues\DomainAssociationEnvironment;
 use PayplugUnifiedCore\Exceptions\InvalidCurrencyException;
 use PayplugUnifiedCore\Exceptions\InvalidPhoneNumberException;
+use PayplugUnifiedCore\Output\DomainAssociationRefreshResult;
 use PayplugUnifiedCore\Utilities\Helpers\AmountHelper;
 use PayplugUnifiedCore\Utilities\Helpers\PhoneHelper;
+use PayplugUnifiedCore\Validators\DomainAssociationValidator;
 
 $failures = array();
 
@@ -66,6 +69,29 @@ check('PhoneHelper throws on invalid number', function () {
     } catch (InvalidPhoneNumberException $e) {
         return true;
     }
+}, $failures);
+
+check('DomainAssociationValidator accepts a production file', function () {
+    $raw = bin2hex(json_encode(array('pspId' => DomainAssociationValidator::PROD_PSP_ID))) . "\n";
+
+    return DomainAssociationValidator::isValid($raw) === true;
+}, $failures);
+
+check('DomainAssociationValidator rejects another pspId', function () {
+    $raw = bin2hex(json_encode(array('pspId' => str_repeat('AB', 32)))) . "\n";
+
+    return DomainAssociationValidator::isValid($raw) === false;
+}, $failures);
+
+check('DomainAssociationValidator accepts the QA file in QA only', function () {
+    $raw = bin2hex(json_encode(array('pspId' => DomainAssociationValidator::QA_PSP_ID))) . "\n";
+
+    return DomainAssociationValidator::isValid($raw, DomainAssociationEnvironment::QA) === true
+        && DomainAssociationValidator::isValid($raw) === false;
+}, $failures);
+
+check('DomainAssociationRefreshResult::failed', function () {
+    return DomainAssociationRefreshResult::failed('x')->isFailed() === true;
 }, $failures);
 
 if (count($failures) > 0) {
